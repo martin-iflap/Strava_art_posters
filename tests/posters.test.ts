@@ -101,3 +101,36 @@ describe('mountains climbed poster', () => {
     expect(renderPoster('climb', a, opts({ climbYear: null })).svg).toContain('2024 ·'); // latest year by default
   });
 });
+
+describe('climb overlay, around the world, weekday time of day', () => {
+  const a = [
+    act({ startMs: utc(2023, 5, 1), distanceM: 30_000_000, elevGainM: 50_000 }),
+    act({ startMs: utc(2024, 2, 1), distanceM: 20_000_000, elevGainM: 60_000 }),
+    act({ startMs: utc(2024, 6, 3), distanceM: 10_000_000, elevGainM: 10_000 }), // a Monday
+  ];
+  it('overlay draws one climb line per year, each labelled with its own total', () => {
+    const p = renderPoster('climb', a, opts({ climbYear: 'overlay', strip: false }));
+    expect(count(p.svg, /fill="none" stroke="#[0-9a-f]{6}" stroke-width="(4\.5|2\.8)"/g)).toBe(2);
+    expect(p.svg).toContain('2023 · 50,000 m');
+    expect(p.svg).toContain('2024 · 70,000 m');
+    expect(p.svg).not.toContain('url(#climbfill)'); // no area fill any more
+  });
+  it('names the next milestone straight up', async () => {
+    const { upward } = await import('../src/posters/climb');
+    expect(upward(65_000)).toMatchObject({ share: 0.65, label: 'of the way to space' });
+    expect(upward(204_000)).toMatchObject({ share: 0.5, label: 'of the way to the ISS' });
+    expect(upward(816_000).share).toBe(2);
+  });
+  it('around the world counts laps of the equator and the share of the way to the Moon', () => {
+    const p = renderPoster('world', a, opts());
+    expect(p.svg).toContain('>1.5<tspan'); // 60,000 km / 40,075 km
+    expect(p.svg).toContain('>15.6<tspan'); // % of 384,400 km
+    expect(p.svg).toContain('>60,000<tspan');
+    expect(renderPoster('world', a, opts({ worldYear: 2023 })).svg).toContain('>0.75<tspan');
+  });
+  it('time of day by weekday covers one year with a row per weekday', () => {
+    const p = renderPoster('todweek', a, opts({ todYear: 2024, strip: false }));
+    for (const d of ['Mon', 'Tue', 'Sun']) expect(p.svg).toContain(`>${d}<`);
+    expect(p.svg).toContain('2024 · when you start');
+  });
+});

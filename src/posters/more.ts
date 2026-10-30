@@ -124,7 +124,7 @@ export function timeOfDay(acts: Activity[], o: PosterOptions, f: Frame): Poster 
     const pts = d.row.map((v, b) => `${n1(x0 + ((b + 0.5) / BINS) * w)},${n1(base - (v / max) * amp)}`);
     const line = `M${pts.join('L')}`;
     body += `<path d="${line}L${n1(x0 + w)},${n1(base)}L${n1(x0)},${n1(base)}Z" fill="${f.theme.bg}"/>` +
-      `<path d="${line}" fill="none" stroke="${i === n - 1 ? f.theme.accent : f.theme.fg}" stroke-width="${n1(Math.min(3.5, Math.max(1.4, spacing * 0.05)))}" stroke-linejoin="round"/>` +
+      `<path d="${line}" fill="none" stroke="${i === n - 1 && o.todRows === 'year' ? f.theme.accent : f.theme.fg}" stroke-width="${n1(Math.min(3.5, Math.max(1.4, spacing * 0.05)))}" stroke-linejoin="round"/>` +
       `<text x="${f.x}" y="${n1(base)}" font-size="${n1(Math.min(22, spacing * 0.5))}" fill="${f.theme.fg}">${esc(labels[i]![1])}</text>` +
       `<text x="${n1(x0 + w + 12)}" y="${n1(base)}" font-size="14" fill="${f.theme.muted}">${int(d.n)}</text>`;
   });

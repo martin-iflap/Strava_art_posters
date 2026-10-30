@@ -2,7 +2,7 @@
 
 **Turn your Strava data export into detailed stats and poster-quality art, privately, in your browser.**
 
-Drop in the ZIP that Strava gives you and get totals by year/month/week/weekday and sport, records and streaks, time in heart-rate and power zones, your most-ridden routes, and eleven downloadable posters (route facets, all-routes glow overlay, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year, mountains climbed) as PNG or SVG, plus CSV/JSON exports.
+Drop in the ZIP that Strava gives you and get totals by year/month/week/weekday and sport, records and streaks, time in heart-rate and power zones, your most-ridden routes, and thirteen downloadable posters (route facets, all-routes glow overlay, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year, mountains climbed, around the world, time of day by weekday) as PNG or SVG, plus CSV/JSON exports.
 
 ## Privacy
 

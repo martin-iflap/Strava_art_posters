@@ -170,6 +170,7 @@ async function main(): Promise<void> {
       ['circles', 'dark', 'a3', 'circles'], ['timeofday', 'ember', 'a3', 'timeofday'], ['punchcard', 'light', 'square', 'punchcard'],
       ['rings', 'aurora', 'square', 'rings'], ['cumulative', 'dark', 'a3', 'cumulative'],
       ['climb', 'dark', 'a3', 'climb'], ['climb', 'light', 'square', 'climb-square'],
+      ['world', 'dark', 'a3', 'world'], ['world', 'aurora', 'square', 'world-square'], ['todweek', 'ember', 'a3', 'todweek'],
     ];
     const pctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
     const pp = await pctx.newPage();
@@ -177,9 +178,12 @@ async function main(): Promise<void> {
     await pp.goto(ORIGIN);
     await pp.click('#demo');
     await pp.waitForSelector('#export', { timeout: 60_000 });
-    await pp.getByRole('button', { name: 'Posters' }).click();
+    await pp.waitForFunction(() => Array.from(document.querySelectorAll('.promo img')).every((i) => (i as HTMLImageElement).src && (i as HTMLImageElement).complete));
+    await shoot(pp, 'stats-promo', false);
+    await pp.click('#open-posters'); // the banner on the stats page leads to the gallery
+    await pp.waitForSelector('.gallery');
     const cards = await pp.locator('.pcard').count();
-    if (cards < 11) problems.push(`gallery shows ${cards} posters, expected all of them`);
+    if (cards < 13) problems.push(`gallery shows ${cards} posters, expected all of them`);
     for (const [type, theme, size, name] of plan) {
       await pp.locator('.controls select').nth(0).selectOption(theme);
       await pp.locator('.controls select').nth(1).selectOption(size);
@@ -216,7 +220,18 @@ async function main(): Promise<void> {
     await pp.click('.lb-next');
     if (!(await pp.textContent('.lb-count'))?.startsWith('1 /')) problems.push('lightbox: next button did not advance');
     await pp.keyboard.press('Escape');
+    await pp.waitForTimeout(100);
     if (await pp.locator('.lightbox').count()) problems.push('lightbox: Escape did not close');
+    // Browser Back closes the viewer and stays on the posters page.
+    await pp.locator('.thumb').nth(2).click();
+    await pp.waitForSelector('.lightbox');
+    await pp.goBack();
+    await pp.waitForTimeout(150);
+    if (await pp.locator('.lightbox').count()) problems.push('lightbox: Back did not close');
+    if (!(await pp.locator('.gallery').count())) problems.push('lightbox: Back left the posters page');
+    // Climb poster: all years overlaid
+    await pp.getByLabel('Mountains climbed: Period').selectOption('overlay');
+    await pp.waitForFunction(() => { const i = document.querySelector('#poster-climb') as HTMLImageElement | null; return !!i?.src && i.complete; });
     if (!(await pp.evaluate(() => document.activeElement?.classList.contains('thumb')))) problems.push('lightbox: focus not returned');
     await shoot(pp, 'posters-page');
     await a11y(pp, 'posters');

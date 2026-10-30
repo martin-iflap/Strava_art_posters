@@ -3,7 +3,7 @@ import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
 
-export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb';
+export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek';
 export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'facets', name: 'Route facets' },
   { id: 'overlay', name: 'All routes' },
@@ -16,6 +16,8 @@ export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'rings', name: 'Year rings' },
   { id: 'cumulative', name: 'Year over year' },
   { id: 'climb', name: 'Mountains climbed' },
+  { id: 'world', name: 'Around the world' },
+  { id: 'todweek', name: 'Time of day by weekday' },
 ];
 
 export interface Theme { id: string; name: string; bg: string; fg: string; muted: string; accent: string }
@@ -50,13 +52,17 @@ export interface PosterOptions {
   circleColor: 'year' | 'sport';
   todRows: 'year' | 'month' | 'weekday';
   punchMetric: 'count' | 'distance';
-  /** null = latest year with data, 'all' = every year */
-  climbYear: number | 'all' | null;
+  /** null = latest year with data, 'all' = every activity as one line, 'overlay' = one line per year */
+  climbYear: number | 'all' | 'overlay' | null;
+  /** 'all' = every year */
+  worldYear: number | 'all';
+  /** single year for the weekday time-of-day poster; null = latest */
+  todYear: number | null;
 }
 
 export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> = {
   theme: 'dark', size: 'a3', strip: true, facetSort: 'date', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
-  circleColor: 'year', todRows: 'year', punchMetric: 'count', climbYear: null,
+  circleColor: 'year', todRows: 'year', punchMetric: 'count', climbYear: null, worldYear: 'all', todYear: null,
 };
 
 export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

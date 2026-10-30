@@ -3,6 +3,7 @@ import { byPeriod } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { dayNumber, fromDayNumber, parts, weekStart } from '../util/time';
 import { climb } from './climb';
+import { world } from './world';
 import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
 import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type PosterOptions, type PosterType } from './common';
 
@@ -250,12 +251,25 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       const f = makeFrame(sel, o, 'Year over year', `${rangeLabel(sel, o.tz)} · cumulative ${metric}`, o.strip);
       return cumulative(sel, o, f);
     }
+    case 'world': {
+      const year = o.worldYear;
+      const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const f = makeFrame(sel, o, 'Around the world', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · your distance wound around the equator · one ring per lap`, o.strip);
+      return world(sel, o, f);
+    }
+    case 'todweek': {
+      const year = o.todYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();
+      const sel = all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const f = makeFrame(sel, o, 'Time of day', `${year} · when you start, by weekday (${o.tz === 'UTC' ? 'UTC' : 'local time'})`, o.strip);
+      return timeOfDay(sel, { ...o, todRows: 'weekday' }, f);
+    }
     case 'climb': {
-      const year = o.climbYear === 'all' ? null : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();
-      const sel = year === null ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const mode = o.climbYear === 'all' || o.climbYear === 'overlay' ? o.climbYear : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();
+      const sel = mode === 'all' ? all : mode === 'overlay' ? recent() : all.filter((a) => parts(a.startMs, o.tz).y === mode);
       const gain = sel.reduce((s, a) => s + a.elevGainM, 0);
-      const f = makeFrame(sel, o, 'Mountains climbed', `${year ?? rangeLabel(sel, o.tz)} · ${int(elevation(gain, o.units))} ${elevationUnit(o.units)} of climbing, activity after activity`, o.strip);
-      return climb(sel, o, f, year);
+      const what = mode === 'overlay' ? 'each year from zero' : 'activity after activity';
+      const f = makeFrame(sel, o, 'Mountains climbed', `${typeof mode === 'number' ? mode : rangeLabel(sel, o.tz)} · ${int(elevation(gain, o.units))} ${elevationUnit(o.units)} of climbing, ${what}`, o.strip);
+      return climb(sel, o, f, mode);
     }
   }
 }

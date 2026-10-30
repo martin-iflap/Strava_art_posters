@@ -119,7 +119,7 @@ const importFiles = (inputs: RawInput[]) => {
 function hero(...children: (Node | null)[]): HTMLElement {
   return h('main', { id: 'main', class: 'hero' },
     h('div', { class: 'hero-top' },
-      h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Your Strava export, analysed privately in this browser tab.')),
+      h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Your Strava export turned into stats and printable posters, privately in this browser tab.')),
       themeToggle()),
     ...children);
 }
@@ -213,11 +213,11 @@ function renderNow(): void {
         ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
 
   const setView = (v: 'stats' | 'posters') => { state.view = v; state.sheet = false; animate = true; render(); window.scrollTo(0, 0); };
-  const navBtn = (v: 'stats' | 'posters', label: string) => h('button', { 'aria-current': (state.view === v || (v === 'stats' && state.view === 'activity')) ? 'page' : undefined, onclick: () => setView(v) }, label);
+  const navBtn = (v: 'stats' | 'posters', label: string, badge?: string) => h('button', { 'aria-current': (state.view === v || (v === 'stats' && state.view === 'activity')) ? 'page' : undefined, onclick: () => setView(v) }, label, badge ? h('span', { class: 'badge', 'aria-label': `${badge} posters` }, badge) : null);
   const sections: [string, string][] = [['overview', 'Overview'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
   const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar' },
     h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
-    h('nav', { class: 'nav', 'aria-label': 'Views' }, navBtn('stats', 'Stats'), navBtn('posters', 'Posters'),
+    h('nav', { class: 'nav', 'aria-label': 'Views' }, navBtn('stats', 'Stats'), navBtn('posters', 'Posters', String(POSTER_TYPES.length)),
       ...(state.view === 'stats' && all.length ? sections.map(([id, t]) => h('a', { href: `#${id}` }, t)) : [])),
     h('div', { class: 'filters', role: 'group', 'aria-label': 'Filters', id: 'filters' },
       select('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
@@ -270,6 +270,7 @@ function renderNow(): void {
     return;
   }
 
+  if (acts.length) main.append(posterPromo(acts, () => setView('posters')));
   main.append(h('h2', { id: 'overview' }, 'Overview'));
   if (!acts.length) {
     main.append(h('div', { class: 'card empty' }, h('h2', {}, 'Nothing here'), h('p', {}, 'There are no activities for this sport. Pick another sport in the filters.')));
@@ -372,7 +373,9 @@ function posterOpts(acts: Activity[]): PosterOptions {
   const o: PosterOptions = { ...poster, units: state.units, tz: state.tz, sportLabel: state.sport === 'all' ? 'All activities' : state.sport };
   const years = yearsOf(acts);
   if (!o.seasonYear || !years.includes(o.seasonYear)) o.seasonYear = years[0] ?? null;
-  if (o.climbYear !== 'all' && (!o.climbYear || !years.includes(o.climbYear))) o.climbYear = years[0] ?? null;
+  if (typeof o.climbYear !== 'string' && (!o.climbYear || !years.includes(o.climbYear))) o.climbYear = years[0] ?? null;
+  if (o.worldYear !== 'all' && !years.includes(o.worldYear)) o.worldYear = 'all';
+  if (!o.todYear || !years.includes(o.todYear)) o.todYear = years[0] ?? null;
   return o;
 }
 const yearsOf = (acts: Activity[]) => [...new Set(acts.map((a) => parts(a.startMs, state.tz).y))].sort((a, b) => b - a);
@@ -421,9 +424,26 @@ function posterSettings(t: PosterType, acts: Activity[]): HTMLElement[] {
       pick('Activities', poster.ridgeSelect, [['recent', 'Most recent'], ['longest', 'Longest'], ['climbiest', 'Biggest climbs']], (v) => (poster.ridgeSelect = v)),
       pick('Count', String(poster.ridgeCount), ['15', '30', '45', '60'].map((c): [string, string] => [c, c]), (v) => (poster.ridgeCount = Number(v)))];
     case 'season': return [pick('Year', String(o.seasonYear), years, (v) => (poster.seasonYear = Number(v)))];
-    case 'climb': return [pick('Period', String(o.climbYear), [...years, ['all', 'All time']], (v) => (poster.climbYear = v === 'all' ? 'all' : Number(v)))];
+    case 'climb': return [pick('Period', String(o.climbYear), [...years, ['all', 'All time'], ['overlay', 'All years overlaid']], (v) => (poster.climbYear = v === 'all' || v === 'overlay' ? v : Number(v)))];
+    case 'world': return [pick('Period', String(o.worldYear), [['all', 'All time'], ...years], (v) => (poster.worldYear = v === 'all' ? 'all' : Number(v)))];
+    case 'todweek': return [pick('Year', String(o.todYear), years, (v) => (poster.todYear = Number(v)))];
     default: return [];
   }
+}
+
+/** Banner at the top of the stats page: the posters are the point of the app, so show some. */
+function posterPromo(acts: Activity[], open: () => void): HTMLElement {
+  const picks: PosterType[] = ['overlay', 'climb', 'world'];
+  const size = SIZES.find((s) => s.id === poster.size) ?? SIZES[0]!;
+  const imgs = picks.map((t) => h('img', { class: 'poster', alt: '', width: size.px[0], height: size.px[1] }));
+  const job = ++posterJob;
+  picks.forEach((t, i) => setTimeout(() => { if (job === posterJob) imgs[i]!.src = posterFor(t, acts).url; }, 0));
+  return h('section', { class: 'promo', 'aria-labelledby': 'promo-title' },
+    h('div', { class: 'promo-text' },
+      h('h2', { id: 'promo-title' }, 'Your activities as art'),
+      h('p', {}, `${POSTER_TYPES.length} printable posters made from your data: every route you've done, the mountains you've climbed, how far around the world you've gone, and more.`),
+      h('button', { id: 'open-posters', class: 'primary', onclick: open }, 'Open the poster gallery →')),
+    h('button', { class: 'promo-thumbs', 'aria-label': 'Open the poster gallery', tabindex: -1, onclick: open }, ...imgs));
 }
 
 function posterSection(acts: Activity[]): HTMLElement {
@@ -504,7 +524,9 @@ function openLightbox(acts: Activity[], start: number, opener: HTMLElement): voi
     counter.textContent = `${i + 1} / ${POSTER_TYPES.length}`;
     status.textContent = '';
   };
-  const close = () => { document.removeEventListener('keydown', onKey); box.remove(); document.body.classList.remove('lb-open'); opener.focus({ preventScroll: true }); };
+  // The viewer is a history entry, so the browser's Back button (or a phone's back gesture) closes it.
+  const teardown = () => { document.removeEventListener('keydown', onKey); window.removeEventListener('popstate', teardown); box.remove(); document.body.classList.remove('lb-open'); opener.focus({ preventScroll: true }); };
+  const close = () => { if ((history.state as { lightbox?: boolean } | null)?.lightbox) history.back(); else teardown(); };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') close();
     else if (e.key === 'ArrowLeft') show(i - 1);
@@ -540,6 +562,8 @@ function openLightbox(acts: Activity[], start: number, opener: HTMLElement): voi
   document.body.append(box);
   document.body.classList.add('lb-open');
   document.addEventListener('keydown', onKey);
+  history.pushState({ lightbox: true }, '');
+  window.addEventListener('popstate', teardown);
   closeBtn.focus();
 }
 
