@@ -1,5 +1,6 @@
 import type { Activity } from '../types';
 import { byPeriod } from '../stats/summary';
+import { findRegions, regionFilter, type RegionChoice } from '../stats/regions';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { dayNumber, fromDayNumber, parts, weekStart } from '../util/time';
 import { climb } from './climb';
@@ -56,26 +57,50 @@ function facets(acts: Activity[], o: PosterOptions, f: Frame): Poster {
 
 // ---------- 2. all routes overlay ----------
 
-function overlay(acts: Activity[], o: PosterOptions, f: Frame): Poster {
-  const routes = acts.filter((a) => a.route);
-  if (!routes.length) return wrapSvg(f, o, emptyMessage(f, 'No GPS routes in this selection'));
+type Box = { x: number; y: number; w: number; h: number };
+
+/** Paths of routes fitted into a box, with robust bounds (2nd–98th percentile) so one stray trip doesn't shrink the rest. */
+function overlayPaths(routes: Activity[], box: Box): string {
   const lat0 = mean(routes.map((a) => a.route![0]!));
   const all = routes.map((a) => project(a.route!, lat0, 2));
-  // Robust bounds (2nd–98th percentile) so one far-away trip doesn't shrink everything else.
   const xs: number[] = [], ys: number[] = [];
   for (const r of all) for (let i = 0; i < r.length; i += 2) { xs.push(r[i]![0]); ys.push(r[i]![1]); }
   xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
   const q = (v: number[], p: number) => v[Math.min(v.length - 1, Math.floor(p * v.length))]!;
   const minX = q(xs, 0.02), maxX = q(xs, 0.98), minY = q(ys, 0.02), maxY = q(ys, 0.98);
-  const bw = maxX - minX, bh = maxY - minY;
-  const paths = all.map((r) => `<path d="${pathD(fit(r, bw, bh, minX, minY, f, 0))}"/>`).join('');
+  return all.map((r) => `<path d="${pathD(fit(r, maxX - minX, maxY - minY, minX, minY, box, 0))}"/>`).join('');
+}
+
+/**
+ * Every route on top of each other. With several regions (home, a holiday, Watopia), the biggest fills the
+ * poster and the others are labelled insets along the bottom, each at its own scale.
+ */
+function overlay(groups: { name: string; acts: Activity[] }[], o: PosterOptions, f: Frame): Poster {
+  const parts = groups.map((g) => ({ name: g.name, routes: g.acts.filter((a) => a.route) })).filter((g) => g.routes.length);
+  if (!parts.length) return wrapSvg(f, o, emptyMessage(f, 'No GPS routes in this selection'));
+  const boxes: Box[] = [];
+  let labels = '';
+  if (parts.length === 1) boxes.push({ x: f.x, y: f.y, w: f.w, h: f.h });
+  else {
+    const insets = parts.slice(1, 5); // at most four insets; more would be too small to read
+    const gap = 24, label = 30;
+    const side = Math.min(f.h * 0.22, (f.w - gap * (insets.length - 1)) / insets.length);
+    boxes.push({ x: f.x, y: f.y, w: f.w, h: f.h - side - label - gap });
+    insets.forEach((g, i) => {
+      const b = { x: f.x + i * (side + gap), y: f.y + f.h - side - label, w: side, h: side };
+      boxes.push(b);
+      labels += `<rect x="${n1(b.x)}" y="${n1(b.y)}" width="${n1(side)}" height="${n1(side)}" rx="12" fill="none" stroke="${f.theme.muted}" stroke-opacity="0.35"/>` +
+        `<text x="${n1(b.x)}" y="${n1(b.y + side + 22)}" font-size="15" letter-spacing="1.5" fill="${f.theme.muted}">${esc(`${g.name} · ${g.routes.length}`.toUpperCase())}</text>`;
+    });
+  }
+  const paths = boxes.map((b, i) => overlayPaths(parts[i]!.routes, i === 0 ? b : { x: b.x + 12, y: b.y + 12, w: b.w - 24, h: b.h - 24 })).join('');
   const defs = `<filter id="glow" x="-5%" y="-5%" width="110%" height="110%"><feGaussianBlur stdDeviation="5"/></filter>` +
-    `<clipPath id="clip"><rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}"/></clipPath><g id="routes">${paths}</g>`;
+    `<clipPath id="clip">${boxes.map((b) => `<rect x="${n1(b.x)}" y="${n1(b.y)}" width="${n1(b.w)}" height="${n1(b.h)}"/>`).join('')}</clipPath><g id="routes">${paths}</g>`;
   const a = f.theme.accent;
   const body = `<g clip-path="url(#clip)" fill="none" stroke-linecap="round" stroke-linejoin="round">` +
     `<use href="#routes" stroke="${a}" stroke-width="7" stroke-opacity="0.22" filter="url(#glow)"/>` +
     `<use href="#routes" stroke="${a}" stroke-width="1.6" stroke-opacity="0.5"/>` +
-    `<use href="#routes" stroke="${mix(a, f.theme.fg, 0.55)}" stroke-width="0.6" stroke-opacity="0.35"/></g>`;
+    `<use href="#routes" stroke="${mix(a, f.theme.fg, 0.55)}" stroke-width="0.6" stroke-opacity="0.35"/></g>` + labels;
   return wrapSvg(f, o, body, defs);
 }
 
@@ -196,6 +221,19 @@ export function latestYear(acts: Activity[], tz: PosterOptions['tz']): number | 
   return acts.length ? Math.max(...acts.map((a) => parts(a.startMs, tz).y)) : null;
 }
 
+/**
+ * Activities of a route poster: one year (or all), in the chosen regions, grouped by region (biggest first);
+ * plus the subtitle's description.
+ */
+function routeSelection(all: Activity[], o: PosterOptions, year: number | 'all', choice: RegionChoice): { sel: Activity[]; groups: { name: string; acts: Activity[] }[]; label: string } {
+  const regions = findRegions(all); // over every year, so a region choice means the same in each period
+  const keep = regionFilter(regions, choice);
+  const sel = all.filter((a) => (year === 'all' || parts(a.startMs, o.tz).y === year) && keep(a));
+  const groups = keep.picked.length > 1 ? keep.picked.map((r) => ({ name: r.name, acts: sel.filter((a) => r.activityIds.has(a.id)) })) : [{ name: '', acts: sel }];
+  const where = keep.picked.length === regions.length ? '' : keep.picked.length === 1 ? keep.picked[0]!.name : `${keep.picked.length} of ${regions.length} regions`;
+  return { sel, groups, label: [year === 'all' ? rangeLabel(sel, o.tz) : String(year), where].filter(Boolean).join(' · ') };
+}
+
 export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions): Poster {
   const range = rangeLabel(all, o.tz);
   // Posters that draw whole calendar years only cover the most recent 8; keep subtitle and totals consistent with that.
@@ -206,13 +244,14 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
   const metric = o.calendarMetric === 'distance' ? 'distance' : 'time';
   switch (type) {
     case 'facets': {
-      const n = all.filter((a) => a.route).length;
-      const f = makeFrame(all, o, 'Route facets', `${range} · ${n} routes · by ${o.facetSort}`, o.strip);
-      return facets(all, o, f);
+      const { sel, label } = routeSelection(all, o, o.facetYear, o.facetRegions);
+      const f = makeFrame(sel, o, 'Route facets', `${label} · ${sel.filter((a) => a.route).length} routes · by ${o.facetSort}`, o.strip);
+      return facets(sel, o, f);
     }
     case 'overlay': {
-      const f = makeFrame(all, o, 'Every route', `${range} · ${all.filter((a) => a.route).length} routes`, o.strip);
-      return overlay(all, o, f);
+      const { sel, groups, label } = routeSelection(all, o, o.overlayYear, o.overlayRegions);
+      const f = makeFrame(sel, o, 'Every route', `${label} · ${sel.filter((a) => a.route).length} routes`, o.strip);
+      return overlay(groups, o, f);
     }
     case 'calendar': {
       const sel = recent();

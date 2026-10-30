@@ -29,13 +29,40 @@ export function svg(tag: string, attrs: Record<string, string | number> = {}, ..
   return el;
 }
 
-export function table(head: string[], rows: Child[][], opts: { numFrom?: number; numCols?: number[]; caption?: string } = {}): HTMLTableElement {
+/**
+ * A table row with an action. `onClick` turns the first cell into a button (keyboard and screen readers);
+ * without it, a row that already holds a button (an activity link) uses that one. Clicking anywhere else
+ * on the row presses the button. `key` identifies the row for `selected` (shaded grey) and focus restoring.
+ */
+export interface Row { cells: Child[]; key?: string; onClick?: () => void; label?: string; expanded?: boolean }
+
+export function table(head: string[], rows: (Child[] | Row)[], opts: { numFrom?: number; numCols?: number[]; caption?: string; id?: string; selected?: string | null } = {}): HTMLTableElement {
   const numFrom = opts.numFrom ?? 1;
   const isNum = (i: number) => (opts.numCols ? opts.numCols.includes(i) : i >= numFrom);
+  const tr = (r: Child[] | Row) => {
+    const row: Row = Array.isArray(r) ? { cells: r } : r;
+    const cells = [...row.cells];
+    if (row.onClick) {
+      cells[0] = h('button', { class: 'rowbtn', 'data-key': opts.id && row.key !== undefined ? `${opts.id}:${row.key}` : undefined,
+        'aria-expanded': row.expanded === undefined ? undefined : String(row.expanded), 'aria-label': row.label, onclick: row.onClick }, cells[0]);
+    }
+    const el = h('tr', { class: row.key !== undefined && row.key === opts.selected ? 'selected' : '' }, ...cells.map((c, i) => h('td', { class: isNum(i) ? 'num' : '' }, c)));
+    if (row.onClick || el.querySelector('button')) {
+      el.classList.add('clickable');
+      el.addEventListener('click', (e) => {
+        if ((e.target as Element).closest('button, a, input, select, summary')) return; // that control handles it
+        if (getSelection()?.toString()) return; // the user is selecting text, not clicking
+        const b = el.querySelector('button');
+        b?.focus({ preventScroll: true }); // keyboard users continue from the row they clicked
+        b?.click();
+      });
+    }
+    return el;
+  };
   return h('table', {},
     opts.caption ? h('caption', {}, opts.caption) : null,
     h('thead', {}, h('tr', {}, ...head.map((t, i) => h('th', { scope: 'col', class: isNum(i) ? 'num' : '' }, t)))),
-    h('tbody', {}, ...rows.map((r) => h('tr', {}, ...r.map((c, i) => h('td', { class: isNum(i) ? 'num' : '' }, c))))),
+    h('tbody', {}, ...rows.map(tr)),
   );
 }
 

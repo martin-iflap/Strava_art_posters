@@ -1,6 +1,7 @@
 import './style.css';
-import { append, download, h, table } from './dom';
-import { TILE_SOURCES, attribution, routeMap, tileSource } from './map';
+import { append, download, h, table, type Row } from './dom';
+import { activityPanel } from './activitylist';
+import { TILE_SOURCES, attribution, defaultTileSource, referrerAvailable, routeMap, tileSource } from './map';
 import { activityView } from './detail';
 import { dash, fmt, opt, plural } from './format';
 import { fromDrop, fromFileList } from './input';
@@ -8,6 +9,8 @@ import { activitiesCsv, exportFilename, periodCsv, sportCsv, statsJson, zonesCsv
 import type { RawInput } from './parse/archive';
 import { clusterRoutes, type RouteCluster } from './stats/routes';
 import { byPeriod, byWeekday, bySport, filterSport, records, sportsOf, summarize, type Summary } from './stats/summary';
+import { selectActivities, type Selection } from './stats/select';
+import { findRegions, regionFilter, type Region, type RegionChoice } from './stats/regions';
 import { activityZones, hrZones, observedMaxHr, powerZones, zoneTotals, zonesBy, type HrZoneConfig, type Zone, type ZoneRow } from './stats/zones';
 import type { Activity, ImportResult, Tz, Units } from './types';
 import { distance, distanceUnit, elevation, elevationUnit, formatDuration, formatHours, speed, speedUnit } from './util/units';
@@ -34,11 +37,13 @@ interface State {
   sheet: boolean;
   /** year shown in the month tables; null = latest year with data */
   monthYear: number | 'all' | null;
-  /** map background tile source id; null = off (no requests leave the browser) */
+  /** the stats row (or repeated route) whose activities are listed below its table; null = none */
+  pick: { table: string; key: string; title: string; sel: Selection } | null;
+  /** map background tile source id; null = off (no requests leave the browser). On by default (OpenStreetMap). */
   mapTiles: string | null;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, mapTiles: null };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, pick: null, mapTiles: defaultTileSource().id };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 const app = document.getElementById('app')!;
@@ -68,13 +73,16 @@ try {
   if (saved === 'light' || saved === 'dark') state.theme = saved;
 } catch { /* storage unavailable: stay on auto */ }
 applyTheme();
+// The map background choice is remembered, including "off". A saved source that cannot work here
+// (OpenStreetMap on a page opened from a file) falls back to the default.
 try {
   const m = localStorage.getItem('ride-atlas-map');
-  if (tileSource(m)) state.mapTiles = m;
-} catch { /* storage unavailable: maps stay off */ }
+  if (m === 'off') state.mapTiles = null;
+  else if (tileSource(m) && (referrerAvailable() || !tileSource(m)!.needsReferrer)) state.mapTiles = m;
+} catch { /* storage unavailable: keep the default */ }
 const setMapTiles = (id: string | null) => {
   state.mapTiles = tileSource(id) ? id : null;
-  try { if (state.mapTiles) localStorage.setItem('ride-atlas-map', state.mapTiles); else localStorage.removeItem('ride-atlas-map'); } catch { /* ignore */ }
+  try { localStorage.setItem('ride-atlas-map', state.mapTiles ?? 'off'); } catch { /* ignore */ }
 };
 
 function themeToggle(): HTMLElement {
@@ -106,6 +114,7 @@ function startImport(msg: WorkerIn): void {
       state.sport = 'all';
       state.hr = null;
       state.monthYear = null;
+      state.pick = null;
       state.showAll = false;
       state.view = 'stats';
       history.replaceState({ view: 'stats' } satisfies NavEntry, '', location.pathname + location.search);
@@ -179,7 +188,7 @@ function renderImport(error?: string): void {
       h('li', {}, 'You give it your Strava export (or GPX, TCX and FIT files from any app or device).'),
       h('li', {}, 'Your browser reads the files in a background worker in this tab. Nothing is uploaded: there is no server, no account and no tracking.'),
       h('li', {}, 'Stats and posters are worked out on your device. Closing the tab forgets everything.')),
-    h('p', {}, 'The one optional exception is the map background: when you switch it on, map pictures (never your activities) are loaded from OpenStreetMap volunteers’ servers.'),
+    h('p', {}, 'The one exception is the map background behind activity maps: map pictures (never your activities) are loaded from OpenStreetMap volunteers’ servers. Switch it off in the filters for a fully offline app.'),
     h('h2', {}, 'How to get your Strava export'),
     h('ol', { class: 'steps' },
       h('li', {}, 'On strava.com open Settings → My Account → “Download or Delete Your Account” → “Get Started”.'),
@@ -200,7 +209,7 @@ const elev = (m: number) => fmt(elevation(m, state.units), 0);
 const dateOf = (ms: number) => ymd(parts(ms, state.tz));
 
 /** A labelled select. `on` updates the state, then `after` runs (by default the page is re-rendered). */
-function selectControl<T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void, o: { ariaLabel?: string; after?: (el: HTMLSelectElement) => void } = {}): HTMLElement {
+function selectControl<T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void, o: { ariaLabel?: string; after?: (el: HTMLElement) => void } = {}): HTMLElement {
   return h('label', {}, label,
     h('select', { 'aria-label': o.ariaLabel, onchange: (e) => { const el = e.target as HTMLSelectElement; on(el.value as T); (o.after ?? render)(el); } },
       ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
@@ -218,19 +227,22 @@ function currentHrZones(all: Activity[]): Zone[] | null {
 }
 
 /** Identify the focused control so it can be re-focused after the DOM is rebuilt (keyboard users keep their place). */
-function focusKey(): { idx: number; tag: string; label: string } | null {
+function focusKey(): { idx: number; tag: string; label: string; key: string | null } | null {
   const el = document.activeElement as HTMLElement | null;
   if (!el || !app.contains(el) || !/^(SELECT|INPUT|BUTTON|A)$/.test(el.tagName)) return null;
   const all = Array.from(app.querySelectorAll('select, input, button, a'));
-  return { idx: all.indexOf(el), tag: el.tagName, label: controlLabel(el) };
+  return { idx: all.indexOf(el), tag: el.tagName, label: controlLabel(el), key: el.dataset.key ?? null };
 }
 function controlLabel(el: Element): string {
   return el.getAttribute('aria-label') || el.closest('label')?.childNodes[0]?.textContent || (el.tagName === 'SELECT' ? '' : el.textContent?.slice(0, 40)) || '';
 }
+/** Focus a control by its data-key (table rows, repeated routes). */
+const focusByKey = (key: string) => app.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 function render(): void {
   const key = focusKey();
   renderNow();
-  if (key) {
+  if (key?.key) focusByKey(key.key);
+  else if (key) {
     const el = Array.from(app.querySelectorAll('select, input, button, a'))[key.idx] as HTMLElement | undefined;
     if (el && el.tagName === key.tag && controlLabel(el) === key.label) el.focus({ preventScroll: true });
   }
@@ -255,8 +267,8 @@ function renderNow(): void {
       selectControl('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
       selectControl('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
       selectControl('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
-      selectControl('Map background', state.mapTiles ?? 'off', [['off', 'Off (fully offline)'], ...TILE_SOURCES.map((t): [string, string] => [t.id, t.name])], (v) => setMapTiles(v === 'off' ? null : v)),
-      state.mapTiles ? h('p', { class: 'hint' }, 'Map images come from OpenStreetMap volunteers’ servers, which see the map areas you view. Your files still stay here.') : null,
+      selectControl('Map background', state.mapTiles ?? 'off', [...TILE_SOURCES.filter((t) => referrerAvailable() || !t.needsReferrer).map((t): [string, string] => [t.id, t.name]), ['off', 'Off (fully offline)']], (v) => setMapTiles(v === 'off' ? null : v)),
+      h('p', { class: 'hint' }, state.mapTiles ? 'Map images come from OpenStreetMap volunteers’ servers, which see the map areas you view. Your files stay here.' : 'No map images are loaded: nothing leaves this browser.'),
       h('button', { class: 'sheet-close', onclick: () => { state.sheet = false; render(); } }, 'Done')),
     h('div', { class: 'side-foot' }, themeToggle(),
       h('p', { class: 'sibling small' }, 'Forgot to record one? ', gpxToFitLink('GPX to FIT'), ' makes a realistic file.'),
@@ -292,7 +304,7 @@ function renderNow(): void {
         units: state.units, tz: state.tz, hz, pz, all,
         list: [...(acts.some((x) => x.id === a.id) ? acts : all)].sort((x, y) => y.startMs - x.startMs),
         open: openActivity, back: closeActivity, clusters: (sport) => clustersFor(all, sport),
-        tiles: tileSource(state.mapTiles), enableTiles: () => { setMapTiles(TILE_SOURCES[0]!.id); render(); },
+        tiles: tileSource(state.mapTiles), setTiles: (id) => { setMapTiles(id); render(); },
       }));
       mount();
       return;
@@ -314,18 +326,20 @@ function renderNow(): void {
     const s = summarize(acts);
     main.append(statGrid(s, acts));
     main.append(recordsSection(acts));
+    const add = (...els: (Node | null)[]) => append(main, els);
     if (state.sport === 'all') {
-      main.append(h('h2', {}, 'By sport'), h('div', { class: 'card' }, summaryTable('Sport', bySport(all).map((x): [string, Summary] => [x.sport, x.summary]))));
+      add(h('h2', {}, 'By sport'), h('div', { class: 'card' }, summaryTable('Sport', 'sport', bySport(all).map((x) => ({ label: x.sport, s: x.summary, key: x.sport, sel: { kind: 'sport', value: x.sport } })))), drill('sport', all));
     }
     const yearRows = byPeriod(acts, 'year', state.tz);
-    main.append(h('h2', { id: 'periods' }, 'By year'), h('div', { class: 'card' }, summaryTable('Year', yearRows.map((r): [string, Summary] => [r.key, r.summary]))));
+    add(h('h2', { id: 'periods' }, 'By year'), h('div', { class: 'card' }, summaryTable('Year', 'year', yearRows.map((r) => ({ label: r.key, s: r.summary, key: r.key, sel: { kind: 'year', value: r.key } })))), drill('year', acts));
     const months = monthRows(byPeriod(acts, 'month', state.tz), acts);
-    main.append(h('div', { class: 'h2row' }, h('h2', {}, 'By month'), yearTabs(acts, 'Year shown in the month table')),
-      h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, summaryTable('Month', months.map((r): [string, Summary] => [r.label, r.summary]))));
-    main.append(h('h2', {}, 'By weekday'), h('div', { class: 'card' }, summaryTable('Weekday', byWeekday(acts, state.tz).map((r): [string, Summary] => [r.label, r.summary]))));
-    main.append(h('details', {}, h('summary', {}, 'By ISO week'), h('div', { class: 'card scroll' }, summaryTable('Week', byPeriod(acts, 'week', state.tz).map((r): [string, Summary] => [`${r.key} (${r.start})`, r.summary]).reverse()))));
+    add(h('div', { class: 'h2row' }, h('h2', {}, 'By month'), yearTabs(acts, 'Year shown in the month table')),
+      h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, summaryTable('Month', 'month', months.map((r) => ({ label: r.label, s: r.summary, key: r.key, sel: { kind: 'month', value: r.key }, title: monthTitle(r.key) })))), drill('month', acts));
+    add(h('h2', {}, 'By weekday'), h('div', { class: 'card' }, summaryTable('Weekday', 'weekday', byWeekday(acts, state.tz).map((r) => ({ label: r.label, s: r.summary, key: String(r.weekday), sel: { kind: 'weekday', value: String(r.weekday) }, title: `Every ${WEEKDAY_NAMES[r.weekday]}` })))), drill('weekday', acts));
+    add(h('details', { open: state.pick?.table === 'week' }, h('summary', {}, 'By ISO week'),
+      h('div', { class: 'card scroll' }, summaryTable('Week', 'week', byPeriod(acts, 'week', state.tz).map((r): SummaryRow => ({ label: `${r.key} (${r.start})`, s: r.summary, key: r.key, sel: { kind: 'week', value: r.key }, title: `Week ${r.key}, from ${r.start}` })).reverse())), drill('week', acts)));
     main.append(zonesSection(all, acts, hz, pz));
-    main.append(loopsSection(acts));
+    main.append(loopsSection());
     main.append(activitiesSection(acts, hz));
     main.append(exportSection(acts, hz, pz));
   }
@@ -376,25 +390,65 @@ function recordsSection(acts: Activity[]): HTMLElement {
   const r = records(acts, state.tz);
   const u = state.units;
   const link = (a: Activity | null): Node | string => (a ? h('span', {}, h('button', { class: 'link', onclick: () => openActivity(a.id) }, a.name), ` (${dateOf(a.startMs)})`) : dash);
-  const rows: (string | Node | null)[][] = [
+  const acts1 = (n: number) => plural(n, 'activity', 'activities');
+  // Records of one activity link to it; the others list their activities below the table.
+  const rows: (Row | (string | Node)[])[] = [
     ['Longest activity', r.longest ? `${dist(r.longest.distanceM)} ${distanceUnit(u)}` : dash, link(r.longest)],
     ['Biggest climb', r.biggestClimb ? `${elev(r.biggestClimb.elevGainM)} ${elevationUnit(u)}` : dash, link(r.biggestClimb)],
     ['Longest duration', r.longestDuration ? formatDuration(r.longestDuration.movingS) : dash, link(r.longestDuration)],
     ['Fastest average speed (≥ 5 km, ≥ 10 min)', r.fastest ? `${fmt(speed(r.fastest.distanceM / r.fastest.movingS, u))} ${speedUnit(u)}` : dash, link(r.fastest)],
-    ['Most active day', r.mostActiveDay ? `${dist(r.mostActiveDay.distanceM)} ${distanceUnit(u)}` : dash, r.mostActiveDay ? `${r.mostActiveDay.date} (${plural(r.mostActiveDay.count, 'activity', 'activities')})` : ''],
-    ['Most active month', r.mostActiveMonth ? `${dist(r.mostActiveMonth.distanceM)} ${distanceUnit(u)}` : dash, r.mostActiveMonth ? `${r.mostActiveMonth.key} (${plural(r.mostActiveMonth.count, 'activity', 'activities')})` : ''],
-    ['Longest streak', r.longestStreak ? plural(r.longestStreak.days, 'day') : dash, r.longestStreak ? `${r.longestStreak.start} → ${r.longestStreak.end}` : ''],
-    ['Current streak (as of last activity)', r.currentStreak ? plural(r.currentStreak.days, 'day') : dash, r.currentStreak ? `ending ${r.currentStreak.end}` : ''],
+    r.mostActiveDay
+      ? pickRow('records', 'day', `Most active day: ${r.mostActiveDay.date}`, { kind: 'day', value: r.mostActiveDay.date }, ['Most active day', `${dist(r.mostActiveDay.distanceM)} ${distanceUnit(u)}`, `${r.mostActiveDay.date} (${acts1(r.mostActiveDay.count)})`])
+      : ['Most active day', dash, ''],
+    r.mostActiveMonth
+      ? pickRow('records', 'month', `Most active month: ${monthTitle(r.mostActiveMonth.key)}`, { kind: 'month', value: r.mostActiveMonth.key }, ['Most active month', `${dist(r.mostActiveMonth.distanceM)} ${distanceUnit(u)}`, `${r.mostActiveMonth.key} (${acts1(r.mostActiveMonth.count)})`])
+      : ['Most active month', dash, ''],
+    r.longestStreak
+      ? pickRow('records', 'streak', `Longest streak: ${r.longestStreak.start} → ${r.longestStreak.end}`, { kind: 'range', value: `${r.longestStreak.start}/${r.longestStreak.end}` }, ['Longest streak', plural(r.longestStreak.days, 'day'), `${r.longestStreak.start} → ${r.longestStreak.end}`])
+      : ['Longest streak', dash, ''],
+    r.currentStreak
+      ? pickRow('records', 'current', `Current streak: ${r.currentStreak.start} → ${r.currentStreak.end}`, { kind: 'range', value: `${r.currentStreak.start}/${r.currentStreak.end}` }, ['Current streak (as of last activity)', plural(r.currentStreak.days, 'day'), `ending ${r.currentStreak.end}`])
+      : ['Current streak (as of last activity)', dash, ''],
   ];
-  return h('div', {}, h('h2', { id: 'records' }, 'Records'), h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows.map((x) => x.map((c) => c ?? '')), { numCols: [1] })));
+  return h('div', {}, h('h2', { id: 'records' }, 'Records'),
+    h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows, { numCols: [1], id: 'records', selected: selectedIn('records') })),
+    drill('records', acts));
 }
 
-function summaryTable(label: string, rows: [string, Summary][]): HTMLElement {
+interface SummaryRow { label: string; s: Summary; key: string; sel: Selection; title?: string }
+function summaryTable(label: string, id: string, rows: SummaryRow[]): HTMLElement {
   const u = state.units;
   return table(
     [label, 'Activities', `Distance (${distanceUnit(u)})`, 'Moving time', `Elevation (${elevationUnit(u)})`, `Avg dist (${distanceUnit(u)})`, `Median (${distanceUnit(u)})`, `Avg speed (${speedUnit(u)})`, 'Avg HR', 'Avg W'],
-    rows.map(([k, s]) => [k, s.count, dist(s.distanceM), formatHours(s.movingS), elev(s.elevGainM), dist(s.avgDistanceM), dist(s.medianDistanceM), fmt(speed(s.avgSpeedMps, u)), opt(s.avgHr), opt(s.avgPower)]),
+    rows.map(({ label: k, s, key, sel, title }) => {
+      const cells = [k, s.count, dist(s.distanceM), formatHours(s.movingS), elev(s.elevGainM), dist(s.avgDistanceM), dist(s.medianDistanceM), fmt(speed(s.avgSpeedMps, u)), opt(s.avgHr), opt(s.avgPower)];
+      return s.count ? pickRow(id, key, title ?? k, sel, cells) : cells; // empty periods have nothing to list
+    }),
+    { id, selected: selectedIn(id) },
   );
+}
+
+// ---------- drill-downs: a row's activities below its table ----------
+
+const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const monthTitle = (key: string) => `${MONTH_FULL[Number(key.slice(5)) - 1]} ${key.slice(0, 4)}`;
+const selectedIn = (table: string) => (state.pick?.table === table ? state.pick.key : null);
+
+/** A table row that lists its activities (in a panel below the table) when clicked; clicking again closes it. */
+function pickRow(table: string, key: string, title: string, sel: Selection, cells: Row['cells']): Row {
+  const on = state.pick?.table === table && state.pick.key === key;
+  return { cells, key, expanded: on, onClick: () => { state.pick = on ? null : { table, key, title, sel }; render(); } };
+}
+
+/** The open panel for this table, if any. `acts` is the set its rows were counted from. */
+function drill(table: string, acts: Activity[]): HTMLElement | null {
+  const p = state.pick;
+  if (!p || p.table !== table) return null;
+  return activityPanel(`list-${table}`, p.title, selectActivities(acts, p.sel, state.tz), {
+    units: state.units, tz: state.tz, tiles: tileSource(state.mapTiles), open: openActivity,
+    close: () => { state.pick = null; render(); focusByKey(`${p.table}:${p.key}`); },
+  });
 }
 
 // ---------- posters ----------
@@ -411,6 +465,8 @@ function posterOpts(acts: Activity[]): PosterOptions {
   if (!o.seasonYear || !years.includes(o.seasonYear)) o.seasonYear = years[0] ?? null;
   if (typeof o.climbYear !== 'string' && (!o.climbYear || !years.includes(o.climbYear))) o.climbYear = years[0] ?? null;
   if (o.worldYear !== 'all' && !years.includes(o.worldYear)) o.worldYear = 'all';
+  if (o.facetYear !== 'all' && !years.includes(o.facetYear)) o.facetYear = 'all';
+  if (o.overlayYear !== 'all' && !years.includes(o.overlayYear)) o.overlayYear = 'all';
   if (!o.todYear || !years.includes(o.todYear)) o.todYear = years[0] ?? null;
   return o;
 }
@@ -430,7 +486,7 @@ function posterFor(type: PosterType, acts: Activity[]): Rendered {
   return r;
 }
 
-const themeControl = (after?: (el: HTMLSelectElement) => void) => selectControl('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v), { ariaLabel: 'Poster theme', after });
+const themeControl = (after?: (el: HTMLElement) => void) => selectControl('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v), { ariaLabel: 'Poster theme', after });
 const posterName = (t: PosterType) => POSTER_TYPES.find((x) => x.id === t)!.name;
 const posterFile = (acts: Activity[], t: PosterType, ext: string) => exportFilename(acts, state.sport, `poster-${t}`, ext, state.tz);
 
@@ -445,13 +501,19 @@ async function downloadPng(acts: Activity[], t: PosterType, status: HTMLElement)
 }
 
 /** Per-poster settings, shown on the poster's card. */
-function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLSelectElement) => void): HTMLElement[] {
+function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLElement) => void): HTMLElement[] {
   const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
     selectControl(label, value, options, on, { ariaLabel: `${posterName(t)}: ${label}`, after });
   const o = posterOpts(acts);
   const years = yearsOf(acts).map((y): [string, string] => [String(y), String(y)]);
   switch (t) {
-    case 'facets': return [pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v))];
+    case 'facets': return [
+      pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v)),
+      pick('Period', String(o.facetYear), [['all', 'All time'], ...years], (v) => (poster.facetYear = v === 'all' ? 'all' : Number(v))),
+      ...regionControl(t, acts, poster.facetRegions, (c) => (poster.facetRegions = c), after)];
+    case 'overlay': return [
+      pick('Period', String(o.overlayYear), [['all', 'All time'], ...years], (v) => (poster.overlayYear = v === 'all' ? 'all' : Number(v))),
+      ...regionControl(t, acts, poster.overlayRegions, (c) => (poster.overlayRegions = c), after)];
     case 'calendar': case 'rings': case 'cumulative': return [pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v))];
     case 'circles': return [pick('Colour by', poster.circleColor, [['year', 'Year'], ['sport', 'Sport']], (v) => (poster.circleColor = v))];
     case 'timeofday': return [pick('Rows', poster.todRows, [['year', 'Years'], ['month', 'Months'], ['weekday', 'Weekdays']], (v) => (poster.todRows = v))];
@@ -465,6 +527,48 @@ function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLSelect
     case 'todweek': return [pick('Year', String(o.todYear), years, (v) => (poster.todYear = Number(v)))];
     default: return [];
   }
+}
+
+const regionCache = new Map<string, Region[]>();
+let regionOwner: unknown = null;
+/** Regions of the current export and sport (cached: the gallery asks for them on every render). */
+function regionsFor(acts: Activity[]): Region[] {
+  if (regionOwner !== state.result) { regionCache.clear(); regionOwner = state.result; }
+  let r = regionCache.get(state.sport);
+  if (!r) { r = findRegions(acts); regionCache.set(state.sport, r); }
+  return r;
+}
+
+/** Which region menu is open (by its label), so it stays open while boxes are ticked and the page redraws. */
+let openRegionMenu: string | null = null;
+
+/**
+ * Region checklist for the route posters: "Everywhere" plus one box per region. Shown only when the
+ * activities are spread over more than one region. At least one region stays ticked.
+ */
+function regionControl(t: PosterType, acts: Activity[], choice: RegionChoice, set: (c: RegionChoice) => void, after?: (el: HTMLElement) => void): HTMLElement[] {
+  const regions = regionsFor(acts);
+  if (regions.length < 2) return [];
+  const label = `${posterName(t)}: Regions`;
+  const picked = new Set(regionFilter(regions, choice).picked.map((r) => r.id));
+  const everywhere = picked.size === regions.length;
+  const apply = (next: Set<string>, el: HTMLElement) => {
+    set(next.size === regions.length ? 'all' : regions.filter((r) => next.has(r.id)).map((r) => r.id));
+    (after ?? render)(el);
+  };
+  const box = (text: string, checked: boolean, aria: string, on: (checked: boolean, el: HTMLInputElement) => void, disabled = false) =>
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', checked, disabled, 'aria-label': aria, onchange: (e) => { const el = e.target as HTMLInputElement; on(el.checked, el); } }), text);
+  const summary = everywhere ? 'Everywhere' : picked.size === 1 ? regions.find((r) => picked.has(r.id))!.name : `${picked.size} of ${regions.length}`;
+  const menu = h('details', { class: 'regions-pick', open: openRegionMenu === label, ontoggle: (e) => { openRegionMenu = (e.target as HTMLDetailsElement).open ? label : openRegionMenu === label ? null : openRegionMenu; } },
+    h('summary', { 'aria-label': `${label}: ${summary}` }, `Regions: ${summary}`),
+    h('div', { class: 'regions-list', role: 'group', 'aria-label': label },
+      box('Everywhere', everywhere, `${posterName(t)}: Everywhere`, (on, el) => { if (on) set('all'); else set('auto'); (after ?? render)(el); }),
+      ...regions.map((r) => box(`${r.name} (${r.count})`, picked.has(r.id), `${posterName(t)}: ${r.name}`, (on, el) => {
+        const next = new Set(picked);
+        if (on) next.add(r.id); else next.delete(r.id);
+        apply(next, el);
+      }, picked.size === 1 && picked.has(r.id)))));
+  return [h('div', { class: 'regions-wrap' }, menu)];
 }
 
 /** Banner at the top of the stats page: the posters are the point of the app, so show some. */
@@ -549,11 +653,11 @@ function openLightbox(acts: Activity[], start: number): void {
   const status = h('span', { class: 'muted small', role: 'status' });
   const settings = h('div', { class: 'row lb-settings', role: 'group', 'aria-label': 'Poster options' });
   /** A setting changed: redraw the poster here and the gallery behind, and keep focus on the control. */
-  const changed = (el: HTMLSelectElement) => {
+  const changed = (el: HTMLElement) => {
     const label = el.getAttribute('aria-label');
     render();
     show(i);
-    if (label) settings.querySelector<HTMLElement>(`select[aria-label="${CSS.escape(label)}"]`)?.focus();
+    if (label) settings.querySelector<HTMLElement>(`[aria-label="${CSS.escape(label)}"]`)?.focus();
   };
   const show = (k: number) => {
     i = (k + POSTER_TYPES.length) % POSTER_TYPES.length;
@@ -583,7 +687,7 @@ function openLightbox(acts: Activity[], start: number): void {
     else if (e.key === 'ArrowLeft') show(i - 1);
     else if (e.key === 'ArrowRight') show(i + 1);
     else if (e.key === 'Tab') { // keep focus inside the viewer
-      const f = Array.from(box.querySelectorAll<HTMLElement>('button, select'));
+      const f = Array.from(box.querySelectorAll<HTMLElement>('button, select, summary, input:not([disabled])')).filter((el) => el.offsetParent !== null);
       const first = f[0]!, last = f[f.length - 1]!;
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
@@ -630,13 +734,17 @@ function zoneBar(seconds: number[]): HTMLElement {
   }));
 }
 
-function zoneTable(title: string, zones: Zone[], rows: ZoneRow[], noun: string): HTMLElement {
+/** Zone minutes per period. With an `id`, rows list their activities (period = 'year' or 'month' keys). */
+function zoneTable(title: string, zones: Zone[], rows: (ZoneRow & { label?: string })[], noun: string, pick?: { id: string; kind: 'year' | 'month' }): HTMLElement {
   const head = [title, ...zones.map((z) => `${z.name} (min)`), 'Share', 'Coverage'];
   const body = rows.map((r) => {
-    if (!r.withData) return [r.key, ...zones.map(() => dash), `No ${noun} data`, `0 / ${r.count}`];
-    return [r.key, ...r.seconds.map((s) => fmt(s / 60, 0)), zoneBar(r.seconds), `${r.withData} / ${r.count}`];
+    const label = r.label ?? r.key;
+    const cells = r.withData
+      ? [label, ...r.seconds.map((s) => fmt(s / 60, 0)), zoneBar(r.seconds), `${r.withData} / ${r.count}`]
+      : [label, ...zones.map(() => dash), `No ${noun} data`, `0 / ${r.count}`];
+    return pick && r.count ? pickRow(pick.id, r.key, pick.kind === 'month' ? monthTitle(r.key) : r.key, { kind: pick.kind, value: r.key }, cells) : cells;
   });
-  return table(head, body, { numFrom: 1 });
+  return table(head, body, { numFrom: 1, id: pick?.id, selected: pick ? selectedIn(pick.id) : null });
 }
 
 function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: Zone[] | null): HTMLElement {
@@ -669,10 +777,10 @@ function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: 
     if (!total.withData) { sec.append(h('p', {}, `None of these activities has ${noun} data, so there is nothing to show.`)); return; }
     sec.append(h('div', { class: 'card' }, h('p', {}, zones.map((z) => `${z.name}: ${z.lower}${z.upper === null ? '+' : '–' + (z.upper - 1)}`).join('  ·  ')),
       zoneTable('Scope', zones, [{ ...total, key: 'All time' }], noun)));
-    sec.append(h('div', { class: 'card' }, zoneTable('Year', zones, zonesBy(acts, stream, zones, 'year', state.tz), noun)));
-    const months = monthRows(zonesBy(acts, stream, zones, 'month', state.tz), acts).map((r) => ({ ...r, key: r.label }));
-    sec.append(h('details', {}, h('summary', {}, 'By month'), h('div', { class: 'row' }, yearTabs(acts, `Year shown in the ${noun} month table`)),
-      h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, zoneTable('Month', zones, months, noun))));
+    append(sec, [h('div', { class: 'card' }, zoneTable('Year', zones, zonesBy(acts, stream, zones, 'year', state.tz), noun, { id: `${stream}-year`, kind: 'year' })), drill(`${stream}-year`, acts)]);
+    const months = monthRows(zonesBy(acts, stream, zones, 'month', state.tz), acts);
+    sec.append(h('details', { open: state.pick?.table === `${stream}-month` }, h('summary', {}, 'By month'), h('div', { class: 'row' }, yearTabs(acts, `Year shown in the ${noun} month table`)),
+      h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, zoneTable('Month', zones, months, noun, { id: `${stream}-month`, kind: 'month' })), drill(`${stream}-month`, acts)));
   };
   block('hr', hz, 'heart-rate', 'No heart-rate data found in this export.');
   block('power', pz, 'power', 'Enter your FTP above to see power zones (only activities with a power stream are counted).');
@@ -691,20 +799,29 @@ function clustersFor(all: Activity[], sport: string): RouteCluster[] {
   return v;
 }
 
-function loopsSection(acts: Activity[]): HTMLElement {
+function loopsSection(): HTMLElement {
   const sec = h('div', {}, h('h2', { id: 'loops' }, 'Most repeated routes'),
-    h('p', {}, 'A heuristic: GPS tracks of similar length that stay within about 80 m of each other on average are grouped, in either direction. Close calls can land on either side.'));
-  const clusters = clustersFor(state.result!.activities, state.sport).slice(0, 12);
+    h('p', {}, 'A heuristic: GPS tracks of similar length that stay within about 80 m of each other on average are grouped, in either direction. Close calls can land on either side. Select a route to list every activity on it.'));
+  const all = state.result!.activities;
+  const clusters = clustersFor(all, state.sport).slice(0, 12);
   if (!clusters.length) { sec.append(h('p', {}, 'No repeated routes found (needs at least two GPS activities that follow the same path).')); return sec; }
   const u = state.units;
-  sec.append(h('div', { class: 'loops' }, ...clusters.map((c) => h('div', { class: 'loop' }, routeMap(c.preview, { tiles: tileSource(state.mapTiles), size: 192, label: `Route done ${c.count} times` }),
-    h('dl', {},
-      h('dt', {}, 'Times done'), h('dd', {}, String(c.count)),
-      h('dt', {}, 'Distance'), h('dd', {}, `${dist(c.avgDistanceM)} ${distanceUnit(u)}`),
-      h('dt', {}, 'Avg time'), h('dd', {}, formatDuration(c.avgMovingS)),
-      h('dt', {}, 'Best time'), h('dd', {}, formatDuration(c.bestMovingS)))))));
   const tiles = tileSource(state.mapTiles);
-  if (tiles) sec.append(attribution(tiles));
+  const card = (c: RouteCluster) => {
+    const key = String(c.id);
+    const on = selectedIn('loops') === key;
+    const title = `Route done ${c.count} times (${dist(c.avgDistanceM)} ${distanceUnit(u)})`;
+    const open = () => { state.pick = on ? null : { table: 'loops', key, title, sel: { kind: 'ids', value: c.activityIds } }; render(); };
+    return h('div', { class: on ? 'loop selected' : 'loop' }, routeMap(c.preview, { tiles, size: 192, label: `Route done ${c.count} times` }),
+      h('div', { class: 'loop-text' },
+        h('dl', {},
+          h('dt', {}, 'Times done'), h('dd', {}, String(c.count)),
+          h('dt', {}, 'Distance'), h('dd', {}, `${dist(c.avgDistanceM)} ${distanceUnit(u)}`),
+          h('dt', {}, 'Avg time'), h('dd', {}, formatDuration(c.avgMovingS)),
+          h('dt', {}, 'Best time'), h('dd', {}, formatDuration(c.bestMovingS))),
+        h('button', { class: 'link stretch small', 'data-key': `loops:${key}`, 'aria-expanded': String(on), 'aria-label': `${on ? 'Hide' : 'Show'} the ${c.count} activities on this route (${dist(c.avgDistanceM)} ${distanceUnit(u)})`, onclick: open }, on ? 'Hide activities' : 'Show activities')));
+  };
+  append(sec, [h('div', { class: 'loops' }, ...clusters.map(card)), tiles ? attribution(tiles) : null, drill('loops', all)]);
   return sec;
 }
 
@@ -734,10 +851,12 @@ function activitiesSection(acts: Activity[], hz: Zone[] | null): HTMLElement {
     const shown = state.showAll ? matches : matches.slice(0, 100);
     const rows = shown.map((a) => {
       const z = hz ? activityZones(a, 'hr', hz) : null;
-      return [dateOf(a.startMs), h('button', { class: 'link name', title: a.name, onclick: () => openActivity(a.id) }, a.name), a.sport, dist(a.distanceM), formatDuration(a.movingS), elev(a.elevGainM), opt(a.avgHr), opt(a.avgPower), ...(hz ?? []).map((_, i) => (z ? fmt(z[i]! / 60, 0) : dash))];
+      const cells = [dateOf(a.startMs), h('button', { class: 'link name', title: a.name, onclick: () => openActivity(a.id) }, a.name), a.sport, dist(a.distanceM), formatDuration(a.movingS), elev(a.elevGainM), opt(a.avgHr), opt(a.avgPower), ...(hz ?? []).map((_, i) => (z ? fmt(z[i]! / 60, 0) : dash))];
+      return { cells, key: a.id };
     });
-    holder.replaceChildren(rows.length ? table(head, rows, { numFrom: 3 }) : h('p', {}, 'No activities match your search.'));
-    status.textContent = `Showing ${shown.length} of ${matches.length}${q ? ' matching' : ''} activities. Select a name to see its details.`;
+    // The row of the activity opened last stays shaded, so you can see where you were.
+    holder.replaceChildren(rows.length ? table(head, rows, { numFrom: 3, selected: state.activityId }) : h('p', {}, 'No activities match your search.'));
+    status.textContent = `Showing ${shown.length} of ${matches.length}${q ? ' matching' : ''} activities. Select a row to see its details.`;
     moreBtn.textContent = `Show all ${matches.length}`;
     moreBtn.hidden = shown.length >= matches.length;
   };

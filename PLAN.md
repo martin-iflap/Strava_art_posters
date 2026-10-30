@@ -1,7 +1,7 @@
 # Round 4 plan
 
-Sixteen requests from the owner, grouped into seven steps. Each step is one commit that leaves the app working
-(`npm run check` green), so work can stop after any step. Numbers in brackets refer to the owner's list.
+Sixteen requests from the owner, grouped into seven steps. Each step leaves the app working (`npm run check` green), so work can stop after any step. Steps 2–4
+share one commit (the owner asked to keep commits few). Numbers in brackets refer to the owner's list.
 
 Guiding rules for every step:
 - Keep modules small and single-purpose; new logic that can be pure (clustering, poster maths) goes in its own
@@ -11,7 +11,7 @@ Guiding rules for every step:
   and the screenshot check gets an assertion for it.
 - Note decisions in `DECISIONS.md` (append-only) and keep the README feature list current.
 
-## Step 1 – Navigation and first impressions  [1, 2, 3, 7, 8]
+## Step 1 – Navigation and first impressions  [1, 2, 3, 7, 8]  ✓ done
 
 1. **Theme selector centred** in the sidebar footer (desktop); unchanged in the mobile header.
 2. **Poster options inside the full-screen viewer.** `posterSettings()` takes an `onChange` callback, so the same
@@ -31,7 +31,7 @@ Guiding rules for every step:
 5. **Link to gpx-to-fit.pages.dev** [8]: on the import page ("Forgot to record a ride? …") and in the sidebar
    footer, opened in a new tab with `rel="noopener noreferrer"`.
 
-## Step 2 – Maps  [6, 13, 14]
+## Step 2 – Maps  [6, 13, 14]  ✓ done
 
 1. **Why OpenStreetMap tiles fail** [14]: tile.openstreetmap.org requires an accurate `Referer` and blocks
    requests without one; a page opened from `file://` (the build uses relative paths, so that works for the
@@ -49,7 +49,7 @@ Guiding rules for every step:
    exactly (also fixes "route only fills half the box"). Hover sync with the charts keeps working.
    Small previews (loops) stay static.
 
-## Step 3 – Clickable stats  [15, 16]
+## Step 3 – Clickable stats  [15, 16]  ✓ done
 
 1. **Shared "activity list" panel**: a compact card grid (mini map + date, name, distance, time) in the same
    layout as the repeated-routes cards, reused everywhere a set of activities is shown. Clicking a card opens
@@ -60,7 +60,7 @@ Guiding rules for every step:
 3. **Selectable table rows** [16]: `table()` gets an optional `onRowClick`; rows become focusable (Enter/Space),
    the selected row is shaded grey (`aria-selected`), selection survives re-renders via state keyed by table id.
 
-## Step 4 – Regions and periods for route posters  [4, 5]
+## Step 4 – Regions and periods for route posters  [4, 5]  ✓ done
 
 1. **Region clustering** (pure, tested, `src/stats/regions.ts`): group activities by start point with
    single-linkage on a ~150 km threshold (grid-bucketed, so linear time). Each region is named by its

@@ -16,6 +16,8 @@ export interface GenOptions {
   stepS?: number;
   /** include deliberately broken rows and files */
   corrupt?: boolean;
+  /** add a few activities far from home (a cycling holiday and virtual rides), so route posters have regions */
+  elsewhere?: boolean;
 }
 
 export interface Truth {
@@ -34,7 +36,6 @@ export interface Truth {
 const HOME_LAT = 45.1;
 const HOME_LON = 7.2;
 const M_LAT = 111_320;
-const M_LON = M_LAT * Math.cos((HOME_LAT * Math.PI) / 180);
 
 function rng32(seed: number) {
   let a = seed >>> 0;
@@ -101,7 +102,7 @@ const eleAt = (p: Path, s: number) => 300 + p.eleA[0]! * Math.sin((2 * Math.PI *
 interface Sample { t: number; lat: number; lon: number; ele: number; hr: number; power: number; cad: number; dist: number }
 type Kind = 'ride' | 'run' | 'walk';
 
-function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number, withHr: boolean, withPower: boolean): Sample[] {
+function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number, withHr: boolean, withPower: boolean, origin: [number, number] = [HOME_LAT, HOME_LON]): Sample[] {
   const dir = path.closed && r() < 0.35 ? -1 : 1;
   const offset = path.closed ? r() * path.len : 0;
   const lateral: XY = [gauss(r) * 8, gauss(r) * 8];
@@ -119,8 +120,8 @@ function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number,
     let v = stopLeft > 0 ? 0 : Math.max(0.5, base * (1 - grade * 4) * (1 + gauss(r) * 0.06));
     if (stopLeft > 0) stopLeft--;
     else if (r() < 0.004) stopLeft = Math.floor(range(r, 6, 24) / step) + 1;
-    const lat = HOME_LAT + (pos[1] + lateral[1] + gauss(r) * 1.5) / M_LAT;
-    const lon = HOME_LON + (pos[0] + lateral[0] + gauss(r) * 1.5) / M_LON;
+    const lat = origin[0] + (pos[1] + lateral[1] + gauss(r) * 1.5) / M_LAT;
+    const lon = origin[1] + (pos[0] + lateral[0] + gauss(r) * 1.5) / (M_LAT * Math.cos((origin[0] * Math.PI) / 180));
     const target = 95 + (188 - 95) * Math.min(1, hrMax + grade * 2.5) * (v === 0 ? 0.7 : 1);
     hr += (target - hr) * 0.08 + gauss(r) * 1.2;
     const power = v === 0 ? 0 : Math.max(0, Math.min(900, 110 + 22 * v + 2500 * grade * (v / 8) + gauss(r) * 25));
@@ -325,6 +326,31 @@ export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: T
       rows.push(csvRow({ id, ms: startMs, name: 'Pool Swim', type: 'Swim', file: '', elapsed: dist * 2.1, moving: dist * 1.9, dist, gain: 0 }));
       truth.importable++;
       truth.bySport['Swim'] = (truth.bySport['Swim'] ?? 0) + 1;
+    }
+  }
+
+  // Far from home, from a separate random stream so the activities above stay the same: a spring cycling
+  // holiday on Mallorca and winter rides in Zwift's Watopia (virtual coordinates in the Pacific, as Zwift exports them).
+  if (opts.elsewhere ?? true) {
+    const r2 = rng32((opts.seed ?? 1234) + 99);
+    const trips: { type: string; name: string; origin: [number, number]; days: number[] }[] = [
+      { type: 'Ride', name: 'Mallorca ride', origin: [39.75, 2.85], days: [0, 1, 2, 4, 5].map((k) => Date.UTC(2023, 3, 10 + k)) },
+      { type: 'Virtual Ride', name: 'Zwift - Watopia', origin: [-11.64, 166.95], days: [0, 9, 17, 30, 44, 58, 71, 85].map((k) => Date.UTC(2023, 11, 1) + k * 86_400_000) },
+    ];
+    for (const trip of trips) {
+      for (const day of trip.days) {
+        const id = String(idCounter++);
+        const startMs = day + Math.floor(range(r2, 8, 18) * 3600_000);
+        const sm = simulate(r2, makeWander(r2, range(r2, 25_000, 70_000)), 'ride', startMs, step, true, trip.type !== 'Ride', trip.origin);
+        const last = sm[sm.length - 1]!;
+        const file = `activities/${id}.gpx`;
+        files.push({ path: file, data: enc(toGpx(trip.name, 'cycling', sm)) });
+        const elapsed = (last.t - sm[0]!.t) / 1000;
+        rows.push(csvRow({ id, ms: startMs, name: trip.name, type: trip.type, file, elapsed, moving: elapsed * 0.95, dist: last.dist, gain: elevationGain(sm.map((x) => x.ele)) }));
+        truth.importable++;
+        truth.withTrack++;
+        truth.bySport[trip.type] = (truth.bySport[trip.type] ?? 0) + 1;
+      }
     }
   }
 

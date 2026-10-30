@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { extname, join } from 'node:path';
 import { zipSync } from 'fflate';
 import { deflateSync } from 'node:zlib';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { generate } from '../src/demo/generate';
 
 const PORT = 4173;
@@ -28,17 +28,17 @@ async function launch(): Promise<Browser> {
   }
 }
 
-/** Map tile hosts: the only outside requests allowed, and only once the user has turned a map background on. */
+/** Map tile hosts: the only outside requests allowed. They are answered locally (see fakeTiles), never fetched. */
 const TILE_HOST = /^https:\/\/([abc]\.tile\.opentopomap\.org|tile\.openstreetmap\.org)\//;
-let tilesAllowed = false;
 let tileRequests = 0;
 
 function watch(page: Page, label: string): void {
-  page.on('console', (m) => { if (m.type() === 'error') problems.push(`[${label}] console error: ${m.text()}`); });
+  // A refused map tile is logged by the browser; the app handles it (see the refusal check), so it is not a problem here.
+  page.on('console', (m) => { if (m.type() === 'error' && !TILE_HOST.test(m.location().url)) problems.push(`[${label}] console error: ${m.text()}`); });
   page.on('pageerror', (e) => problems.push(`[${label}] page error: ${e.message}`));
   page.on('request', (r) => {
     const u = r.url();
-    if (TILE_HOST.test(u) && tilesAllowed) { tileRequests++; return; }
+    if (TILE_HOST.test(u)) { tileRequests++; return; }
     if (!u.startsWith(ORIGIN) && !u.startsWith('blob:') && !u.startsWith('data:')) problems.push(`[${label}] network request: ${u}`);
   });
   page.on('requestfailed', (r) => problems.push(`[${label}] request failed: ${r.url()} ${r.failure()?.errorText}`));
@@ -55,6 +55,13 @@ function fakeTile(): Buffer {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 
+/** Answer map tile requests with a plain local picture, so the check never needs the internet. */
+async function fakeTiles(ctx: BrowserContext): Promise<BrowserContext> {
+  const body = fakeTile();
+  await ctx.route(TILE_HOST, (r) => r.fulfill({ status: 200, contentType: 'image/png', body }));
+  return ctx;
+}
+
 async function shoot(page: Page, name: string, fullPage = true): Promise<void> {
   await page.waitForTimeout(350); // let the 220 ms enter animation finish
   await page.screenshot({ path: `screenshots/${name}.png`, fullPage });
@@ -67,12 +74,13 @@ const AXE = readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 
 /** Run axe-core (injected via evaluate, so the page CSP is not involved) and record serious/critical violations. */
 async function a11y(page: Page, label: string): Promise<void> {
+  await page.waitForTimeout(350); // the enter animation fades content in; contrast is measured after it
   await page.evaluate(AXE);
   const violations = await page.evaluate(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await (window as any).axe.run(document, { runOnly: ['wcag2a', 'wcag2aa', 'best-practice'] });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return r.violations.filter((v: any) => v.impact === 'serious' || v.impact === 'critical').map((v: any) => `${v.id}: ${v.help} (${v.nodes.length} nodes, e.g. ${v.nodes[0].target})`);
+    return r.violations.filter((v: any) => v.impact === 'serious' || v.impact === 'critical').map((v: any) => `${v.id}: ${v.help} (${v.nodes.length} nodes, e.g. ${v.nodes[0].target}: ${v.nodes[0].failureSummary?.split('\n').slice(0, 3).join(' ')})`);
   });
   for (const v of violations) problems.push(`[a11y ${label}] ${v}`);
 }
@@ -103,7 +111,7 @@ async function main(): Promise<void> {
 
     for (const s of sizes) {
       for (const scheme of schemes) {
-        const ctx = await browser.newContext({ viewport: { width: s.width, height: s.height }, colorScheme: scheme });
+        const ctx = await fakeTiles(await browser.newContext({ viewport: { width: s.width, height: s.height }, colorScheme: scheme }));
         const page = await ctx.newPage();
         const label = `${s.n}-${scheme}`;
         watch(page, label);
@@ -160,19 +168,48 @@ async function main(): Promise<void> {
           await page.locator('.detail .chart').first().focus();
           await page.keyboard.press('End');
           if (!(await page.textContent('.detail .chart .bubble-text'))?.startsWith((await page.locator('.detail .chart .tick').last().textContent())!.split(' ')[0]!)) problems.push('chart End key did not jump to the end');
-          // Map background is opt-in; tiles are answered locally.
-          if (tileRequests) problems.push('map tiles requested before the user turned them on');
-          await page.route(TILE_HOST, (r) => r.fulfill({ status: 200, contentType: 'image/png', body: fakeTile() }));
-          tilesAllowed = true;
-          await page.click('.map-on');
-          await page.waitForSelector('.detail .map.has-tiles image');
-          await page.waitForTimeout(400);
+          // Map background: OpenStreetMap by default (tiles answered locally), movable and zoomable.
+          await page.waitForSelector('.detail .map.has-tiles .tiles img');
+          await page.waitForTimeout(300);
           await shoot(page, 'activity-map-desktop-light', false);
-          console.log('map tiles requested:', tileRequests);
-          if (!tileRequests) problems.push('map background did not load any tiles');
           if (!(await page.locator('.detail .map-attr').count())) problems.push('map attribution missing');
+          if (!(await page.locator('.detail .tiles img').first().getAttribute('src'))?.includes('tile.openstreetmap.org')) problems.push('map background is not OpenStreetMap by default');
+          const mapState = () => page.evaluate(() => ({
+            route: document.querySelector('.detail .map .route')?.getAttribute('points')?.slice(0, 40),
+            tiles: Array.from(document.querySelectorAll('.detail .tiles img')).map((i) => (i as HTMLImageElement).src.split('/').slice(-3).join('/')).sort().join(' '),
+          }));
+          const m0 = await mapState();
+          const mb = (await page.locator('.detail .map').boundingBox())!;
+          await page.mouse.move(mb.x + mb.width * 0.3, mb.y + mb.height * 0.6);
+          await page.mouse.down();
+          await page.mouse.move(mb.x + mb.width * 0.6, mb.y + mb.height * 0.4, { steps: 5 });
+          await page.mouse.up();
+          await page.waitForTimeout(100);
+          const m1 = await mapState();
+          if (m1.route === m0.route) problems.push('map: dragging did not move the map');
+          await page.mouse.move(mb.x + mb.width * 0.5, mb.y + mb.height * 0.5);
+          await page.mouse.wheel(0, -400);
+          await page.waitForTimeout(100);
+          const m2 = await mapState();
+          if (m2.route === m1.route) problems.push('map: the wheel did not zoom');
+          await page.getByRole('button', { name: 'Fit the route' }).click();
+          await page.waitForTimeout(100);
+          if ((await mapState()).route !== m0.route) problems.push('map: "Fit the route" did not restore the view');
+          await page.locator('.detail .map').focus();
+          await page.keyboard.press('+');
+          await page.keyboard.press('ArrowLeft');
+          await page.waitForTimeout(100);
+          if ((await mapState()).route === m0.route) problems.push('map: keyboard did not move or zoom the map');
+          await page.keyboard.press('0');
+          // Off means off: no tile requests at all.
           await page.getByLabel('Map background').selectOption('off');
-          tilesAllowed = false;
+          const tilesBefore = tileRequests;
+          await page.getByRole('button', { name: /Older activity/ }).click();
+          await page.waitForSelector('#activity-title');
+          if (await page.locator('.detail .map.has-tiles').count()) problems.push('map background still shown after switching it off');
+          if (tileRequests !== tilesBefore) problems.push('map tiles requested while the map background is off');
+          await page.goBack();
+          await page.waitForSelector('#activity-title');
           await a11y(page, 'activity');
           await page.getByRole('button', { name: /Older activity/ }).click();
           await page.waitForSelector('#activity-title');
@@ -186,6 +223,38 @@ async function main(): Promise<void> {
           await page.getByRole('button', { name: /Older activity/ }).click();
           await page.click('#back'); // must skip over the stacked activity entries
           await page.waitForSelector('#overview');
+          // Clickable stats: a row (clicked anywhere) lists its activities below the table, shaded while selected.
+          await page.locator('#records ~ .card tr', { hasText: 'Most active day' }).locator('td').nth(1).click();
+          await page.waitForSelector('#list-records .act-card').catch(() => problems.push('records: most active day did not list its activities'));
+          if (!(await page.locator('#records ~ .card tr.selected').count())) problems.push('records: the clicked row is not shaded');
+          if ((await page.evaluate(() => document.activeElement?.getAttribute('aria-expanded'))) !== 'true') problems.push('records: focus is not on the expanded row');
+          await page.locator('.loops:not(.act-list) .loop button.stretch').first().click();
+          await page.waitForSelector('#list-loops .act-card').catch(() => problems.push('routes: a repeated route did not list its activities'));
+          if (await page.locator('#list-records').count()) problems.push('drill-down: two lists open at once');
+          const loopCards = await page.locator('#list-loops .act-card').count();
+          if (loopCards !== 12 || !(await page.locator('#list-loops .more').isVisible())) problems.push(`routes: expected 12 cards and a "Show more" button, got ${loopCards}`);
+          await page.locator('#list-loops .more').click();
+          if ((await page.locator('#list-loops .act-card').count()) <= 12) problems.push('routes: "Show more" added no cards');
+          await shoot(page, 'stats-route-list', false);
+          await a11y(page, 'stats-with-list');
+          // A card opens its activity; Back returns to the open list.
+          await page.locator('#list-loops .act-name').first().click();
+          await page.waitForSelector('#activity-title');
+          await page.goBack();
+          await page.waitForSelector('#list-loops').catch(() => problems.push('drill-down: the list was gone after returning from an activity'));
+          await page.getByRole('button', { name: /^Close the list/ }).click();
+          if (await page.locator('#list-loops').count()) problems.push('drill-down: Close did not close the list');
+          if (!(await page.evaluate(() => document.activeElement?.closest('.loop')))) problems.push('drill-down: focus did not return to the route after closing');
+          // Period rows, by keyboard: Enter on the year button.
+          await page.locator('button.rowbtn', { hasText: /^\d{4}$/ }).first().focus();
+          await page.keyboard.press('Enter');
+          await page.waitForSelector('#list-year .act-card').catch(() => problems.push('years: Enter on a year row did not list its activities'));
+          // The activity opened last stays shaded in the activities table.
+          await page.locator('#activities ~ .card tbody tr').nth(2).locator('td').nth(3).click();
+          await page.waitForSelector('#activity-title');
+          await page.goBack();
+          await page.waitForSelector('#activities');
+          if ((await page.locator('#activities ~ .card tbody tr').nth(2).getAttribute('class'))?.includes('selected') !== true) problems.push('activities: the row of the activity opened last is not shaded');
           // keyboard focus survives a re-render
           await page.locator('.filters select').nth(1).focus();
           await page.locator('.filters select').nth(1).selectOption('imperial');
@@ -223,7 +292,7 @@ async function main(): Promise<void> {
       ['climb', 'dark', 'a3', 'climb'], ['climb', 'light', 'square', 'climb-square'],
       ['world', 'dark', 'a3', 'world'], ['world', 'aurora', 'square', 'world-square'], ['todweek', 'ember', 'a3', 'todweek'],
     ];
-    const pctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+    const pctx = await fakeTiles(await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true }));
     const pp = await pctx.newPage();
     watch(pp, 'posters');
     await pp.goto(ORIGIN);
@@ -294,6 +363,29 @@ async function main(): Promise<void> {
     await pp.waitForTimeout(100);
     if ((await pp.locator('.gallery').getByLabel('Mountains climbed: Period').inputValue()) !== 'overlay') problems.push('lightbox: gallery did not pick up the option changed in the viewer');
     await pp.waitForFunction(() => { const i = document.querySelector('#poster-climb') as HTMLImageElement | null; return !!i?.src && i.complete; });
+    // Route posters: a period, and regions (the demo has a holiday and Zwift rides far from home).
+    const overlayCard = pp.locator('.pcard', { has: pp.locator('#poster-overlay') });
+    const overlaySrc = () => pp.getAttribute('#poster-overlay', 'src');
+    const src0 = await overlaySrc();
+    await overlayCard.locator('.regions-pick summary').click();
+    if ((await overlayCard.locator('.regions-list input').count()) < 3) problems.push('regions: expected Everywhere plus at least two regions');
+    await overlayCard.getByLabel('All routes: Everywhere').check();
+    await pp.waitForFunction((s) => (document.querySelector('#poster-overlay') as HTMLImageElement).src !== s, src0).catch(() => problems.push('regions: ticking Everywhere did not redraw All routes'));
+    if (!(await overlayCard.locator('.regions-pick[open]').count())) problems.push('regions: the menu closed after ticking a box');
+    if ((await pp.evaluate(() => document.activeElement?.getAttribute('aria-label'))) !== 'All routes: Everywhere') problems.push('regions: focus lost after ticking a box');
+    await shoot(pp, 'posters-regions', false);
+    await overlayCard.getByLabel('All routes: Watopia (Zwift)').uncheck();
+    if (await overlayCard.getByLabel('All routes: Everywhere').isChecked()) problems.push('regions: Everywhere still ticked after removing a region');
+    const src1 = await overlaySrc();
+    await overlayCard.getByLabel('All routes: Period').selectOption({ index: 1 });
+    await pp.waitForFunction((s) => (document.querySelector('#poster-overlay') as HTMLImageElement).src !== s, src1).catch(() => problems.push('route posters: the period did not redraw All routes'));
+    if (!(await pp.locator('.pcard').getByLabel('Route facets: Period').count())) problems.push('route facets: no period choice');
+    await overlayCard.locator('.thumb').click();
+    await pp.waitForSelector('.lightbox');
+    if (!(await pp.locator('.lb-settings .regions-pick').count())) problems.push('regions: no region choice in the viewer');
+    await a11y(pp, 'lightbox-regions');
+    await pp.keyboard.press('Escape');
+    await pp.waitForTimeout(100);
     // Regression: after visiting an activity, closing the viewer must stay on the gallery (it used to reopen the activity).
     await pp.getByRole('button', { name: 'Stats', exact: true }).first().click();
     await pp.locator('.link.name').first().click();
@@ -327,6 +419,8 @@ async function main(): Promise<void> {
     for (const f of files) zip[`strava_export/${f.path}`] = f.data;
     writeFileSync('screenshots/_upload.zip', zipSync(zip, { level: 0 }));
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await ctx.route(/tile\.opentopomap\.org/, (r) => r.fulfill({ status: 200, contentType: 'image/png', body: fakeTile() }));
+    await ctx.route(/tile\.openstreetmap\.org/, (r) => r.fulfill({ status: 403, body: 'Referer is required' }));
     const page = await ctx.newPage();
     watch(page, 'upload');
     await page.goto(ORIGIN);
@@ -335,9 +429,14 @@ async function main(): Promise<void> {
     const report = await page.textContent('#issues + p');
     console.log('upload report:', report);
     if (!/3 skipped/.test(report ?? '')) problems.push(`unexpected import report: ${report}`);
+    // A tile server that refuses us (OpenStreetMap without a referrer) leads to an explanation and the other background.
+    await page.locator('.link.name').first().click();
+    await page.waitForSelector('#activity-title');
+    await page.getByRole('button', { name: /Use Outdoor/ }).click({ timeout: 10_000 }).catch(() => problems.push('map: refused tiles did not offer the other background'));
+    await page.waitForSelector('.detail .tiles img[src*="opentopomap"]', { timeout: 5000 }).catch(() => problems.push('map: switching to OpenTopoMap after a refusal failed'));
     // GitHub Pages style sub-path hosting: relative asset and worker URLs must still resolve.
     const pages = servePages('/ride-atlas/', 4180);
-    const gctx = await browser.newContext({ viewport: { width: 1100, height: 800 } });
+    const gctx = await fakeTiles(await browser.newContext({ viewport: { width: 1100, height: 800 } }));
     const gp = await gctx.newPage();
     gp.on('console', (m) => { if (m.type() === 'error') problems.push(`[pages] console error: ${m.text()}`); });
     gp.on('pageerror', (e) => problems.push(`[pages] page error: ${e.message}`));
@@ -353,7 +452,7 @@ async function main(): Promise<void> {
       const bz: Record<string, Uint8Array> = {};
       for (const f of big.files) bz[f.path] = f.data;
       writeFileSync('screenshots/_big.zip', zipSync(bz, { level: 0 }));
-      const bctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+      const bctx = await fakeTiles(await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true }));
       const bp = await bctx.newPage();
       watch(bp, 'big');
       await bp.goto(ORIGIN);

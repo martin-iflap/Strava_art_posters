@@ -1,7 +1,8 @@
 import { dash, fmt, opt, plural } from './format';
-import { h, table } from './dom';
+import { h, table, type Row } from './dom';
+import { activityPanel } from './activitylist';
 import { Cursor, lineChart, sampleAt } from './charts';
-import { attribution, routeMap, type TileSource } from './map';
+import { TILE_SOURCES, attribution, defaultTileSource, routeMap, type TileSource } from './map';
 import type { RouteCluster } from './stats/routes';
 import { activityZones, type Zone } from './stats/zones';
 import type { Activity, Tz, Units } from './types';
@@ -22,8 +23,8 @@ export interface DetailContext {
   clusters(sport: string): RouteCluster[];
   /** map background, or null when the user has not turned one on */
   tiles: TileSource | null;
-  /** turn the default map background on */
-  enableTiles(): void;
+  /** switch the map background (a TILE_SOURCES id) */
+  setTiles(id: string): void;
 }
 
 const ZONE_COLORS = ['#8e8e93', '#30b0c7', '#34c759', '#ff9f0a', '#ff453a', '#bf5af2', '#ff2d55'];
@@ -120,10 +121,17 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
     if (a.profile) bits.push(`${fmt(elevation(sampleAt(a.profile, t), u), 0)} ${elevationUnit(u)}`);
     return bits.join(' · ');
   };
-  const mapNote = c.tiles ? attribution(c.tiles)
-    : h('button', { class: 'map-on', title: 'Loads map images from OpenTopoMap, which then knows which area you are looking at. You can change this in the filters.', onclick: c.enableTiles }, 'Show map background');
+  const mapNote = h('span', { class: 'map-note' }, c.tiles ? attribution(c.tiles)
+    : h('button', { class: 'map-on', title: 'Loads map images from OpenStreetMap volunteers’ servers, which then see which area you are looking at. You can change this in the filters.', onclick: () => c.setTiles(defaultTileSource().id) }, 'Show map background'));
+  /** The tile server sent nothing usable: say why (as far as we can tell) and offer the other background. */
+  const tilesFailed = () => {
+    const other = TILE_SOURCES.find((t) => t !== c.tiles && !t.needsReferrer);
+    mapNote.replaceChildren(h('span', { class: 'warn', role: 'status' },
+      `${c.tiles!.name} sent no map images${c.tiles!.needsReferrer ? ' (it refuses pages opened from a file or with referrers turned off, and you may be offline)' : ' (you may be offline)'}. `),
+      ...(other ? [h('button', { class: 'map-on', onclick: () => c.setTiles(other.id) }, `Use ${other.name}`)] : []));
+  };
   const routeCard = a.route
-    ? h('figure', { class: 'card route-card' }, routeMap(a.route, { tiles: c.tiles, markers: true, label: `Route of ${a.name}`, cursor, describe }),
+    ? h('figure', { class: 'card route-card' }, routeMap(a.route, { tiles: c.tiles, markers: true, label: `Route of ${a.name}`, cursor, describe, interactive: true, onTilesFailed: tilesFailed }),
         h('figcaption', {}, h('span', { class: 'legend' }, h('span', { class: 'dot start' }), ' start  ', h('span', { class: 'dot finish' }), ' finish'), mapNote))
     : h('div', { class: 'card empty' }, h('p', {}, 'This activity has no GPS track (indoor, manual, or the file was missing or unreadable).'));
   root.append(h('div', { class: 'detail-grid' }, routeCard, h('div', { class: 'charts' }, ...(charts.length ? charts : [h('div', { class: 'card empty' }, h('p', {}, 'No elevation, speed, heart-rate or power data for this activity.'))]))));
@@ -150,19 +158,31 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
     if (a.powerHist || c.pz) root.append(zoneBlock('Power', c.pz, 'power'));
   }
 
-  // splits
+  // splits: selecting a row shows that stretch on the map and charts
   const rows = splitRows(a, u);
   if (rows.length) {
     const pace = PACE_SPORTS.has(a.sport);
     const best = Math.min(...rows.filter((r) => r.seconds > 0).map((r) => r.seconds / r.meters));
-    root.append(h('h2', {}, `Splits per ${du}`), h('div', { class: 'card scroll' }, table(
-      [du, 'Time', pace ? `Pace (/${du})` : `Speed (${speedUnit(u)})`, ''],
-      rows.map((r) => {
-        const perM = r.seconds / r.meters;
-        const bar = h('div', { class: 'splitbar', title: `${du} ${r.label}: ${formatDuration(r.seconds)}` });
-        bar.style.width = `${Math.max(4, Math.min(100, (best / perM) * 100))}%`;
-        return [r.label, formatDuration(r.seconds), r.seconds > 0 ? (pace ? formatDuration(perM * (u === 'metric' ? 1000 : KM_PER_MI * 1000)) : fmt(speed(r.meters / r.seconds, u))) : dash, bar];
-      }), { numFrom: 1 })));
+    const endM = a.splits!.endM;
+    let fromM = 0;
+    const body: Row[] = rows.map((r, i) => {
+      const perM = r.seconds / r.meters;
+      const bar = h('div', { class: 'splitbar', title: `${du} ${r.label}: ${formatDuration(r.seconds)}` });
+      bar.style.width = `${Math.max(4, Math.min(100, (best / perM) * 100))}%`;
+      const mid = (fromM + r.meters / 2) / endM;
+      fromM += r.meters;
+      return {
+        key: String(i), label: `Show ${du} ${r.label} on the map and charts`,
+        cells: [r.label, formatDuration(r.seconds), r.seconds > 0 ? (pace ? formatDuration(perM * (u === 'metric' ? 1000 : KM_PER_MI * 1000)) : fmt(speed(r.meters / r.seconds, u))) : dash, bar],
+        onClick: () => {
+          splits.querySelectorAll('tr.selected').forEach((tr) => tr.classList.remove('selected'));
+          splits.tBodies[0]!.rows[i]!.classList.add('selected');
+          cursor.set(mid);
+        },
+      };
+    });
+    const splits = table([du, 'Time', pace ? `Pace (/${du})` : `Speed (${speedUnit(u)})`, ''], body, { numFrom: 1 });
+    root.append(h('h2', {}, `Splits per ${du}`), h('div', { class: 'card scroll' }, splits));
   }
 
   // how it compares
@@ -181,12 +201,22 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
     const byId = new Map(c.all.map((x) => [x.id, x]));
     const times = cl.activityIds.map((id) => byId.get(id)!).filter((x) => x.movingS > 0).sort((x, y) => x.movingS - y.movingS);
     const pos = times.findIndex((x) => x.id === a.id) + 1;
+    const all = cl.activityIds.map((id) => byId.get(id)!);
+    const panelHolder = h('div', {});
+    const toggle: HTMLButtonElement = h('button', { 'aria-expanded': 'false', onclick: () => {
+      const open = !panelHolder.firstChild;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.textContent = open ? 'Hide the list' : `Show all ${cl.count}`;
+      panelHolder.replaceChildren(...(open ? [activityPanel('list-route', `This route, done ${cl.count} times`, [...all].sort((x, y) => y.startMs - x.startMs),
+        { units: u, tz: c.tz, tiles: c.tiles, open: c.open, close: () => toggle.click() })] : []));
+    } }, `Show all ${cl.count}`);
     root.append(h('h2', {}, 'Repeated route'),
       h('p', {}, `You have done this route ${plural(cl.count, 'time')} (best ${formatDuration(cl.bestMovingS)}, average ${formatDuration(cl.avgMovingS)}).${pos ? ` This one is #${pos} fastest of ${times.length}.` : ''} Matching is a heuristic.`),
-      h('div', { class: 'card scroll' }, table(['Date', 'Activity', 'Time'], times.slice(0, 8).map((x) => [
-        ymd(parts(x.startMs, c.tz)),
-        x.id === a.id ? `${x.name} (this one)` : h('button', { class: 'link', onclick: () => c.open(x.id) }, x.name),
-        formatDuration(x.movingS)]), { numFrom: 2 })));
+      h('div', { class: 'card scroll' }, table(['Date', 'Activity', 'Time'], times.slice(0, 8).map((x) => ({
+        key: x.id,
+        cells: [ymd(parts(x.startMs, c.tz)), x.id === a.id ? `${x.name} (this one)` : h('button', { class: 'link', onclick: () => c.open(x.id) }, x.name), formatDuration(x.movingS)],
+      })), { numFrom: 2, selected: a.id })),
+      h('p', {}, toggle), panelHolder);
   }
   void opt;
   return root;

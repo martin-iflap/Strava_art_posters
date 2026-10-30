@@ -1,4 +1,5 @@
 import type { Activity, Tz, Units } from '../types';
+import type { RegionChoice } from '../stats/regions';
 import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
@@ -44,6 +45,13 @@ export interface PosterOptions {
   /** shown as the title, e.g. "All activities" or "Ride" */
   sportLabel: string;
   facetSort: 'date' | 'distance';
+  /** period of the route facets: one year or 'all' */
+  facetYear: number | 'all';
+  /** regions on the route facets (see stats/regions) */
+  facetRegions: RegionChoice;
+  overlayYear: number | 'all';
+  /** 'auto' = the home region only, when activities are spread over several */
+  overlayRegions: RegionChoice;
   calendarMetric: 'distance' | 'time';
   ridgeSelect: 'recent' | 'longest' | 'climbiest';
   ridgeCount: number;
@@ -61,7 +69,7 @@ export interface PosterOptions {
 }
 
 export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> = {
-  theme: 'dark', size: 'a3', strip: true, facetSort: 'date', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
+  theme: 'dark', size: 'a3', strip: true, facetSort: 'date', facetYear: 'all', facetRegions: 'all', overlayYear: 'all', overlayRegions: 'auto', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
   circleColor: 'year', todRows: 'year', punchMetric: 'count', climbYear: null, worldYear: 'all', todYear: null,
 };
 

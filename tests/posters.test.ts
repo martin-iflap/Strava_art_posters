@@ -135,17 +135,40 @@ describe('climb overlay, around the world, weekday time of day', () => {
   });
 });
 
+describe('route posters: period and regions', () => {
+  it('the demo spreads over home, a holiday and Watopia; All routes shows home by default', async () => {
+    const a = await load();
+    const p = renderPoster('overlay', a, opts());
+    expect(p.svg).toContain('Home area');
+    const n = (svg: string) => Number(/(\d+) routes/.exec(svg)![1]);
+    expect(n(renderPoster('overlay', a, opts({ overlayRegions: 'all' })).svg)).toBeGreaterThan(n(p.svg));
+    const y = renderPoster('facets', a, opts({ facetYear: 2022 }));
+    expect(y.svg).toContain('>2022 · ');
+    expect(n(y.svg)).toBeLessThan(n(renderPoster('facets', a, opts()).svg));
+  });
+});
+
 describe('map and chart helpers', () => {
-  it('web mercator and zoom fitting', async () => {
-    const { mercator, fitZoom } = await import('../src/map');
+  it('web mercator, view fitting and tile placement', async () => {
+    const { mercator, fitView, tilesFor } = await import('../src/map');
     expect(mercator(0, 0)).toEqual([128, 128]);
     expect(mercator(0, 180)[0]).toBe(256);
     expect(mercator(85.05, 0)[1]).toBeCloseTo(0, 0);
-    // the largest zoom at which the box still fits inside the padded square
-    const z = fitZoom(0.256, 0.1, 512, 32, 17);
-    expect(0.256 * 2 ** z).toBeLessThanOrEqual(448);
-    expect(0.256 * 2 ** (z + 1)).toBeGreaterThan(448);
-    expect(fitZoom(1e-9, 1e-9, 512, 32, 17)).toBe(17); // a single point is capped at the tile server's max zoom
+    // fractional zoom: the longer side of the box exactly fills the padded square
+    const v = fitView([[10, 20], [10.256, 20.1]], 512, 32, 19);
+    expect(v.cx).toBeCloseTo(10.128);
+    expect(v.cy).toBeCloseTo(20.05);
+    expect(0.256 * 2 ** v.z).toBeCloseTo(448);
+    expect(fitView([[5, 5], [5, 5]], 512, 32, 17).z).toBe(17); // a single point is capped at the max zoom
+    // tiles at the view's own zoom are 256 units; at one zoom lower they are scaled to 512
+    const t = tilesFor({ cx: 128, cy: 128, z: 2 }, 512, 2);
+    expect(t.every((p) => p.size === 256 && p.z === 2)).toBe(true);
+    expect(t.length).toBe(4); // the view lines up with tile edges: exactly 2 × 2 tiles
+    expect(tilesFor({ cx: 128, cy: 128, z: 2 }, 512, 1).every((p) => p.size === 512)).toBe(true);
+    // x wraps around the antimeridian, rows outside the world are skipped
+    const edge = tilesFor({ cx: 0, cy: 1, z: 1 }, 256, 1);
+    expect(edge.map((p) => p.x).sort()).toEqual([0, 1]);
+    expect(edge.every((p) => p.y === 0)).toBe(true);
   });
   it('samples series at a fraction of the distance', async () => {
     const { sampleAt } = await import('../src/charts');
