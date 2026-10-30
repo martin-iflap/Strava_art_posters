@@ -20,8 +20,9 @@ so most of its security comes down to what the page does with your files and wha
 
 ## Hosting it yourself
 
-The CSP is added to the built `index.html` as a meta tag, so it applies anywhere, including GitHub Pages.
-Some protections can only be set as HTTP headers. If your host allows headers, add:
+The CSP is added to the built `index.html` as a meta tag, so it applies on any host. Some protections can
+only be set as HTTP headers. The build writes them to `dist/_headers`, which Cloudflare Pages (where the app
+is published) and Netlify apply automatically. On another host, set them yourself:
 
 ```
 Content-Security-Policy: <the policy from vite.config.ts>; frame-ancestors 'none'

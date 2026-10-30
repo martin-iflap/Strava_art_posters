@@ -46,9 +46,16 @@ npm run fixtures   # write a fake export to fixtures/ (folder + ZIP)
 npm run examples   # re-render the example posters on the import page (public/examples/)
 ```
 
-### Publishing on GitHub Pages
+### Publishing on Cloudflare Pages
 
-The build uses relative URLs, so it works from `https://<user>.github.io/<repo>/` with no configuration. `.github/workflows/pages.yml` builds and deploys `dist/` on every push to `main`; enable **Settings → Pages → Source: GitHub Actions**.
+Connect the repository in the Cloudflare dashboard (**Workers & Pages → Create → Pages → Connect to Git**) with:
+
+- Production branch: `main`
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Environment variable `NODE_VERSION` = `22`
+
+Every push to `main` is then published, and other branches get preview URLs. The build writes `dist/_headers`, which Cloudflare applies as HTTP headers (Content-Security-Policy with `frame-ancestors 'none'`, `nosniff`, referrer and permissions policies). The build uses relative URLs, so `dist/` also works from any other static host or sub-path.
 
 ### Screenshots
 
