@@ -5,11 +5,12 @@ import { distance, distanceUnit, elevation, elevationUnit } from '../util/units'
 import { dayNumber, fromDayNumber, parts, weekStart } from '../util/time';
 import { climb } from './climb';
 import { world } from './world';
+import { landscape, pickLabel, pickProfiles } from './landscape';
+import { space } from './space';
 import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
-import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type PosterOptions, type PosterType } from './common';
+import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type Poster, type PosterOptions, type PosterType } from './common';
 
 export * from './common';
-export interface Poster { svg: string; width: number; height: number }
 
 /** Project [lat,lon,...] to planar coordinates (x east, y down) around a reference latitude. */
 function project(route: number[], lat0: number, step = 1): [number, number][] {
@@ -18,6 +19,18 @@ function project(route: number[], lat0: number, step = 1): [number, number][] {
   for (let i = 0; i < route.length; i += 2 * step) out.push([route[i + 1]! * k, -route[i]!]);
   return out;
 }
+/**
+ * A route without its first and last `m` metres, so a shared poster does not show the exact spot where
+ * activities start and end (often home). The route is sampled evenly by distance, so metres map to points
+ * directly. Routes shorter than the two trimmed ends together are dropped (null).
+ */
+export function trimRoute(route: number[] | null, distanceM: number, m: number): number[] | null {
+  if (!route || m <= 0) return route;
+  const n = route.length / 2;
+  const cut = Math.ceil((m / Math.max(distanceM, 1)) * (n - 1));
+  return n - 2 * cut >= 2 ? route.slice(2 * cut, 2 * (n - cut)) : null;
+}
+
 const pathD = (pts: [number, number][]) => 'M' + pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L');
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / (xs.length || 1);
 
@@ -151,11 +164,7 @@ function calendar(acts: Activity[], o: PosterOptions, f: Frame): Poster {
 // ---------- 4. elevation ridgelines ----------
 
 function ridgelines(acts: Activity[], o: PosterOptions, f: Frame): Poster {
-  let sel = acts.filter((a) => a.profile);
-  if (o.ridgeSelect === 'longest') sel = sel.sort((a, b) => b.distanceM - a.distanceM);
-  else if (o.ridgeSelect === 'climbiest') sel = sel.sort((a, b) => b.elevGainM - a.elevGainM);
-  else sel = sel.sort((a, b) => b.startMs - a.startMs);
-  sel = sel.slice(0, Math.max(3, o.ridgeCount)).sort((a, b) => a.startMs - b.startMs);
+  const sel = pickProfiles(acts, o.ridgeSelect, Math.max(3, o.ridgeCount));
   if (!sel.length) return wrapSvg(f, o, emptyMessage(f, 'No elevation data in this selection'));
   const ranges = sel.map((a) => Math.max(...a.profile!) - Math.min(...a.profile!)).sort((a, b) => a - b);
   const ref = Math.max(ranges[Math.floor(ranges.length * 0.9)] ?? 1, 20); // 90th-percentile range sets the scale
@@ -228,7 +237,8 @@ export function latestYear(acts: Activity[], tz: PosterOptions['tz']): number | 
 function routeSelection(all: Activity[], o: PosterOptions, year: number | 'all', choice: RegionChoice): { sel: Activity[]; groups: { name: string; acts: Activity[] }[]; label: string } {
   const regions = findRegions(all); // over every year, so a region choice means the same in each period
   const keep = regionFilter(regions, choice);
-  const sel = all.filter((a) => (year === 'all' || parts(a.startMs, o.tz).y === year) && keep(a));
+  const sel = all.filter((a) => (year === 'all' || parts(a.startMs, o.tz).y === year) && keep(a))
+    .map((a) => (o.hideEnds > 0 && a.route ? { ...a, route: trimRoute(a.route, a.distanceM, o.hideEnds) } : a));
   const groups = keep.picked.length > 1 ? keep.picked.map((r) => ({ name: r.name, acts: sel.filter((a) => r.activityIds.has(a.id)) })) : [{ name: '', acts: sel }];
   const where = keep.picked.length === regions.length ? '' : keep.picked.length === 1 ? keep.picked[0]!.name : `${keep.picked.length} of ${regions.length} regions`;
   return { sel, groups, label: [year === 'all' ? rangeLabel(sel, o.tz) : String(year), where].filter(Boolean).join(' · ') };
@@ -259,7 +269,7 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       return calendar(sel, o, f);
     }
     case 'ridgelines': {
-      const f = makeFrame(all, o, 'Elevation profiles', `${o.ridgeSelect === 'recent' ? 'Most recent' : o.ridgeSelect === 'longest' ? 'Longest' : 'Biggest climbs'} · ${Math.min(o.ridgeCount, all.filter((a) => a.profile).length)} activities`, o.strip);
+      const f = makeFrame(all, o, 'Elevation profiles', `${pickLabel(o.ridgeSelect)} · ${Math.min(o.ridgeCount, all.filter((a) => a.profile).length)} activities`, o.strip);
       return ridgelines(all, o, f);
     }
     case 'season': {
@@ -269,8 +279,11 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       return season(ys, o, f, year);
     }
     case 'circles': {
-      const f = makeFrame(all, o, 'Activity bubbles', `${range} · area shows distance · ${Math.min(1000, all.filter((a) => a.distanceM > 0).length)} activities`, o.strip);
-      return circles(all, o, f);
+      const year = o.circleYear;
+      const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const per = o.circleGroup === 'none' ? '' : ` · one cluster per ${o.circleGroup}`;
+      const f = makeFrame(sel, o, 'Activity bubbles', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · area shows distance · ${Math.min(1000, sel.filter((a) => a.distanceM > 0).length)} activities${per}`, o.strip);
+      return circles(sel, o, f);
     }
     case 'timeofday': {
       const f = makeFrame(all, o, 'Time of day', `${range} · when you start (${o.tz === 'UTC' ? 'UTC' : 'local time'}) · by ${o.todRows}`, o.strip);
@@ -301,6 +314,17 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       const sel = all.filter((a) => parts(a.startMs, o.tz).y === year);
       const f = makeFrame(sel, o, 'Time of day', `${year} · when you start, by weekday (${o.tz === 'UTC' ? 'UTC' : 'local time'})`, o.strip);
       return timeOfDay(sel, { ...o, todRows: 'weekday' }, f);
+    }
+    case 'landscape': {
+      const n = pickProfiles(all, o.landSelect, o.landCount).length;
+      const f = makeFrame(all, o, 'Landscape', `${pickLabel(o.landSelect)} · ${n} elevation profiles · heights ${o.landHeight === 'absolute' ? 'above sea level' : 'from each start'}`, o.strip);
+      return landscape(all, o, f);
+    }
+    case 'space': {
+      const year = o.spaceYear;
+      const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const f = makeFrame(sel, o, 'To space', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · ${o.spaceMetric === 'distance' ? 'your distance' : 'your climbing'}, pointed straight up`, o.strip);
+      return space(sel, o, f);
     }
     case 'climb': {
       const mode = o.climbYear === 'all' || o.climbYear === 'overlay' ? o.climbYear : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();

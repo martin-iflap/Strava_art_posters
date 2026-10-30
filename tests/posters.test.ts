@@ -178,3 +178,79 @@ describe('map and chart helpers', () => {
     expect(sampleAt([7], 0.3)).toBe(7);
   });
 });
+
+describe('bubbles, landscape and to space', () => {
+  it('bubbles: one period, and one labelled cluster per year or sport', async () => {
+    const a = await load();
+    const one = renderPoster('circles', a, opts({ strip: false }));
+    const byYear = renderPoster('circles', a, opts({ circleGroup: 'year', strip: false }));
+    const circlesIn = (s: string) => count(s, /<circle /g);
+    expect(circlesIn(byYear.svg)).toBe(circlesIn(one.svg)); // same activities, only rearranged
+    for (const y of ['2021', '2022', '2023', '2024']) expect(byYear.svg).toMatch(new RegExp(`>${y}<tspan`));
+    expect(renderPoster('circles', a, opts({ circleGroup: 'sport' })).svg).toMatch(/>Ride<tspan/);
+    expect(circlesIn(renderPoster('circles', a, opts({ circleYear: 2023, strip: false })).svg)).toBeLessThan(circlesIn(one.svg));
+  });
+  it('cluster layout: grid keeps the order, packing keeps clusters apart, both inside the box', async () => {
+    const { clusterLayout } = await import('../src/posters/more');
+    const r = [3, 1, 2, 0.5];
+    const grid = clusterLayout(r, 'grid', 800, 600, 40);
+    expect(grid[1]!.x).toBeGreaterThan(grid[0]!.x); // reading order
+    for (const mode of ['grid', 'pack'] as const) {
+      const c = clusterLayout(r, mode, 800, 600, 40);
+      c.forEach((p, i) => {
+        expect(p.x - r[i]! * p.k).toBeGreaterThanOrEqual(-1e-6);
+        expect(p.x + r[i]! * p.k).toBeLessThanOrEqual(800 + 1e-6);
+        expect(p.y - r[i]! * p.k).toBeGreaterThanOrEqual(-1e-6);
+        c.slice(i + 1).forEach((q, j) => expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeGreaterThanOrEqual((r[i]! + r[i + 1 + j]!) * p.k - 1e-6));
+      });
+    }
+  });
+  it('landscape: one filled profile per picked activity, relative or above sea level', async () => {
+    const { pickProfiles } = await import('../src/posters/landscape');
+    const a = [
+      act({ startMs: utc(2024, 1, 1), distanceM: 5000, profile: [500, 600, 550] }),
+      act({ startMs: utc(2024, 2, 1), distanceM: 9000, profile: [100, 140, 120] }),
+      act({ startMs: utc(2024, 3, 1), distanceM: 7000, profile: null }),
+    ];
+    expect(pickProfiles(a, 'longest', 1).map((x) => x.distanceM)).toEqual([9000]);
+    expect(pickProfiles(a, 'recent', 5).map((x) => x.startMs)).toEqual([utc(2024, 1, 1), utc(2024, 2, 1)]); // oldest first
+    const rel = renderPoster('landscape', a, opts({ strip: false }));
+    expect(count(rel.svg, /fill-opacity=/g)).toBe(2);
+    expect(rel.svg).toContain('+100 m · 2024-01-01'); // tallest from its own start
+    const abs = renderPoster('landscape', a, opts({ landHeight: 'absolute', strip: false }));
+    expect(abs.svg).toContain('600 m · 2024-01-01');
+    expect(abs.svg).not.toContain('NaN');
+  });
+  it('to space: altitude marks and the share of the way to the next one', async () => {
+    const { altitudeMarks } = await import('../src/posters/space');
+    expect(altitudeMarks(5_000)).toMatchObject({ passed: null, next: { name: 'Everest' } });
+    expect(altitudeMarks(450_000)).toMatchObject({ passed: { name: 'International Space Station' }, next: { name: 'GPS satellites' } });
+    expect(altitudeMarks(400_000_000)).toMatchObject({ passed: { name: 'The Moon' }, next: null });
+    const a = [act({ startMs: utc(2023, 5, 1), distanceM: 300_000, elevGainM: 30_000 }), act({ startMs: utc(2024, 5, 1), distanceM: 300_000, elevGainM: 20_000 })];
+    const climb = renderPoster('space', a, opts());
+    expect(climb.svg).toContain('>50<tspan'); // km climbed
+    expect(climb.svg).toContain('>50<tspan font-size="26" font-weight="600" dx="3" fill="#5ac8fa">%'); // half way to the Kármán line
+    expect(climb.svg).toContain('>2024<');
+    const dist = renderPoster('space', a, opts({ spaceMetric: 'distance', spaceYear: 2024 }));
+    expect(dist.svg).toContain('>300<tspan');
+    expect(dist.svg).toContain('Kármán line');
+  });
+});
+
+describe('privacy', () => {
+  it('trims the start and end of routes on the route posters', async () => {
+    const { trimRoute } = await import('../src/posters');
+    const route = Array.from({ length: 11 }, (_, i) => [50 + i * 0.001, 14]).flat(); // 11 points over 1 km
+    expect(trimRoute(route, 1000, 0)).toBe(route);
+    const t = trimRoute(route, 1000, 200)!;
+    expect(t.length / 2).toBe(7);
+    expect(t[0]).toBeCloseTo(50.002);
+    expect(trimRoute(route, 1000, 500)).toBeNull(); // nothing would be left
+    expect(trimRoute(null, 1000, 200)).toBeNull();
+    const a = [act({ startMs: utc(2024, 1, 1), distanceM: 1000, route })];
+    const points = (svg: string) => count(/<path d="[^"]*"/.exec(svg)![0], /L/g) + 1;
+    // the overlay draws every second point: 11 → 6, trimmed 7 → 4
+    expect(points(renderPoster('overlay', a, opts({ hideEnds: 0 })).svg)).toBe(6);
+    expect(points(renderPoster('overlay', a, opts({ hideEnds: 200 })).svg)).toBe(4);
+  });
+});

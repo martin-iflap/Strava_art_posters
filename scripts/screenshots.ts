@@ -121,6 +121,7 @@ async function main(): Promise<void> {
         await page.evaluate(() => Promise.all(Array.from(document.querySelectorAll<HTMLImageElement>('.examples img')).map((i) => { i.loading = 'eager'; return i.decode(); })))
           .catch(() => problems.push(`${label}: an example poster on the import page did not load`));
         await shoot(page, `home-${label}`);
+        if (!(await page.locator('#privacy + .safety li').count())) problems.push(`${label}: the import page has no privacy and safety section`);
         if (scheme === 'light') await a11y(page, `home-${s.n}`);
         await page.click('#demo');
         await page.waitForSelector('#export', { timeout: 60_000 });
@@ -152,18 +153,24 @@ async function main(): Promise<void> {
           console.log('activity view:', { tiles, charts, route: svgs, title: await page.textContent('#activity-title') });
           if (tiles < 5 || charts < 2 || svgs !== 1) problems.push('activity detail looks empty');
           // Hover: one chart shows its value, every chart and the map show the same point.
+          await page.locator('.detail .chart').first().scrollIntoViewIfNeeded();
           const box = (await page.locator('.detail .chart').first().boundingBox())!;
           await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
           const hover = await page.evaluate(() => ({
             charts: Array.from(document.querySelectorAll('.detail .chart .hover')).filter((g) => g.getAttribute('visibility') === 'visible').length,
             bubble: document.querySelector('.detail .chart .bubble-text')?.textContent ?? '',
-            map: document.querySelector('.detail .map-cursor')?.parentElement?.getAttribute('visibility'),
+            map: document.querySelector('.detail .map-cursor')?.closest('[display="none"]') ? 'hidden' : 'visible',
             mapText: document.querySelector('.detail .map-bubble-text')?.textContent ?? '',
           }));
           console.log('hover:', hover);
           if (hover.charts !== charts || !/km · \d/.test(hover.bubble) || hover.map !== 'visible' || !/km · /.test(hover.mapText)) problems.push(`chart hover not shown everywhere: ${JSON.stringify(hover)}`);
           await shoot(page, 'activity-hover-desktop-light', false);
           await page.mouse.move(5, 5);
+          // Regression: leaving the chart hid the map's dot and label but left its bubble box behind.
+          // (checkVisibility() is not reliable inside SVG, so look for a hidden ancestor or the element's own visibility)
+          const leftOver = await page.evaluate(() => Array.from(document.querySelectorAll('.detail .map-cursor, .detail .map .bubble'))
+            .filter((el) => !el.closest('[display="none"]') && getComputedStyle(el).visibility !== 'hidden').length);
+          if (leftOver) problems.push(`map hover marker still shown after the pointer left (${leftOver} parts)`);
           // Keyboard: focus a chart and step with the arrow keys.
           await page.locator('.detail .chart').first().focus();
           await page.keyboard.press('End');
@@ -291,6 +298,7 @@ async function main(): Promise<void> {
       ['rings', 'aurora', 'square', 'rings'], ['cumulative', 'dark', 'a3', 'cumulative'],
       ['climb', 'dark', 'a3', 'climb'], ['climb', 'light', 'square', 'climb-square'],
       ['world', 'dark', 'a3', 'world'], ['world', 'aurora', 'square', 'world-square'], ['todweek', 'ember', 'a3', 'todweek'],
+      ['landscape', 'light', 'a3', 'landscape'], ['space', 'dark', 'a3', 'space'], ['space', 'ember', 'square', 'space-square'],
     ];
     const pctx = await fakeTiles(await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true }));
     const pp = await pctx.newPage();
@@ -303,7 +311,7 @@ async function main(): Promise<void> {
     await pp.click('#open-posters'); // the banner on the stats page leads to the gallery
     await pp.waitForSelector('.gallery');
     const cards = await pp.locator('.pcard').count();
-    if (cards < 13) problems.push(`gallery shows ${cards} posters, expected all of them`);
+    if (cards < 15) problems.push(`gallery shows ${cards} posters, expected all of them`);
     for (const [type, theme, size, name] of plan) {
       await pp.locator('.controls select').nth(0).selectOption(theme);
       await pp.locator('.controls select').nth(1).selectOption(size);
@@ -380,6 +388,13 @@ async function main(): Promise<void> {
     await overlayCard.getByLabel('All routes: Period').selectOption({ index: 1 });
     await pp.waitForFunction((s) => (document.querySelector('#poster-overlay') as HTMLImageElement).src !== s, src1).catch(() => problems.push('route posters: the period did not redraw All routes'));
     if (!(await pp.locator('.pcard').getByLabel('Route facets: Period').count())) problems.push('route facets: no period choice');
+    // Privacy: route ends are hidden by default, and the choice redraws the poster.
+    const hide = overlayCard.getByLabel('All routes: Hide route ends');
+    if ((await hide.inputValue()) !== '200') problems.push('privacy: route ends are not hidden by default');
+    const src2 = await overlaySrc();
+    await hide.selectOption('1000');
+    await pp.waitForFunction((s) => (document.querySelector('#poster-overlay') as HTMLImageElement).src !== s, src2).catch(() => problems.push('privacy: Hide route ends did not redraw All routes'));
+    if ((await pp.locator('.pcard').getByLabel('Route facets: Hide route ends').inputValue()) !== '1000') problems.push('privacy: Hide route ends is not shared by both route posters');
     await overlayCard.locator('.thumb').click();
     await pp.waitForSelector('.lightbox');
     if (!(await pp.locator('.lb-settings .regions-pick').count())) problems.push('regions: no region choice in the viewer');

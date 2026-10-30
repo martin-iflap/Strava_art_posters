@@ -4,7 +4,7 @@ import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
 
-export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek';
+export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space';
 export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'facets', name: 'Route facets' },
   { id: 'overlay', name: 'All routes' },
@@ -19,6 +19,8 @@ export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'climb', name: 'Mountains climbed' },
   { id: 'world', name: 'Around the world' },
   { id: 'todweek', name: 'Time of day by weekday' },
+  { id: 'landscape', name: 'Landscape' },
+  { id: 'space', name: 'To space' },
 ];
 
 export interface Theme { id: string; name: string; bg: string; fg: string; muted: string; accent: string }
@@ -40,6 +42,8 @@ export interface PosterOptions {
   theme: string;
   size: string;
   strip: boolean;
+  /** metres cut from both ends of every route on the route posters (privacy); 0 = off */
+  hideEnds: number;
   units: Units;
   tz: Tz;
   /** shown as the title, e.g. "All activities" or "Ride" */
@@ -58,6 +62,10 @@ export interface PosterOptions {
   /** null = latest year with data */
   seasonYear: number | null;
   circleColor: 'year' | 'sport';
+  /** period of the bubbles: one year or 'all' */
+  circleYear: number | 'all';
+  /** one packed cluster per year or per sport, or a single pack ('none') */
+  circleGroup: 'none' | 'year' | 'sport';
   todRows: 'year' | 'month' | 'weekday';
   punchMetric: 'count' | 'distance';
   /** null = latest year with data, 'all' = every activity as one line, 'overlay' = one line per year */
@@ -66,16 +74,33 @@ export interface PosterOptions {
   worldYear: number | 'all';
   /** single year for the weekday time-of-day poster; null = latest */
   todYear: number | null;
+  landSelect: 'recent' | 'longest' | 'climbiest';
+  landCount: number;
+  /** heights above sea level, or from each activity's lowest point */
+  landHeight: 'absolute' | 'relative';
+  /** what goes straight up: metres climbed or distance */
+  spaceMetric: 'climb' | 'distance';
+  spaceYear: number | 'all';
 }
 
 export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> = {
-  theme: 'dark', size: 'a3', strip: true, facetSort: 'date', facetYear: 'all', facetRegions: 'all', overlayYear: 'all', overlayRegions: 'auto', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
-  circleColor: 'year', todRows: 'year', punchMetric: 'count', climbYear: null, worldYear: 'all', todYear: null,
+  theme: 'dark', size: 'a3', strip: true, hideEnds: 200, facetSort: 'date', facetYear: 'all', facetRegions: 'all', overlayYear: 'all', overlayRegions: 'auto', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
+  circleColor: 'year', circleYear: 'all', circleGroup: 'none', todRows: 'year', punchMetric: 'count', climbYear: null, worldYear: 'all', todYear: null,
+  landSelect: 'recent', landCount: 50, landHeight: 'relative', spaceMetric: 'climb', spaceYear: 'all',
 };
 
 export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 export const n1 = (v: number) => (Math.round(v * 10) / 10).toString();
 export const int = (v: number) => Math.round(v).toLocaleString('en-US');
+/** A multiple ("×") for headlines: whole numbers from 100, one decimal from 10, two below. */
+export const fmtCount = (c: number) => (c >= 100 ? int(c) : c >= 10 ? n1(c) : (Math.round(c * 100) / 100).toString());
+
+/** A round axis step (1, 2, 2.5 or 5 × 10ⁿ) giving about `n` ticks up to `max`. */
+export function niceStep(max: number, n: number): number {
+  const raw = max / n, p = 10 ** Math.floor(Math.log10(raw || 1));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+}
 
 const hex = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 export function mix(a: string, b: string, t: number): string {
@@ -159,7 +184,10 @@ export function makeFrame(acts: Activity[], o: PosterOptions, kicker: string, su
   return { W, H, theme, x: MARGIN, y, w: W - 2 * MARGIN, h: bottom - y, head, foot };
 }
 
-export function wrapSvg(f: Frame, o: PosterOptions, body: string, defs = ''): { svg: string; width: number; height: number } {
+/** A finished poster: SVG text plus its output pixel size. */
+export interface Poster { svg: string; width: number; height: number }
+
+export function wrapSvg(f: Frame, o: PosterOptions, body: string, defs = ''): Poster {
   const size = SIZES.find((s) => s.id === o.size) ?? SIZES[0]!;
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size.px[0]}" height="${size.px[1]}" viewBox="0 0 ${f.W} ${f.H}" font-family="${FONT}">` +

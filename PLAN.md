@@ -1,7 +1,7 @@
 # Round 4 plan
 
 Sixteen requests from the owner, grouped into seven steps. Each step leaves the app working (`npm run check` green), so work can stop after any step. Steps 2–4
-share one commit (the owner asked to keep commits few). Numbers in brackets refer to the owner's list.
+share one commit, and so do steps 5–7 (the owner asked to keep commits few). Numbers in brackets refer to the owner's list.
 
 Guiding rules for every step:
 - Keep modules small and single-purpose; new logic that can be pure (clustering, poster maths) goes in its own
@@ -71,7 +71,7 @@ Guiding rules for every step:
    would shrink it to a dot; otherwise everything), used by Route facets and All routes.
 3. **Time period** select for Route facets and All routes (year or all time), same control as other posters.
 
-## Step 5 – Poster additions and compaction  [9, 10, 12]
+## Step 5 – Poster additions and compaction  [9, 10, 12]  ✓ done
 
 1. **Activity bubbles** [9]: options "per year", "per sport", "all years, one cluster per year" (packed clusters
    laid out in a grid with year labels, shared scale so sizes compare across clusters).
@@ -81,14 +81,18 @@ Guiding rules for every step:
 3. **Around the world, more compact** [12]: smaller headline, globe and rings use the freed space, legend
    moved beside the globe on square sizes, lap labels thinned.
 
-## Step 6 – "To space" climbing poster  [11]
+## Step 6 – "To space" climbing poster  [11]  ✓ done
 
 A curved ascent from the Earth's surface: the Earth as an arc at the bottom, the climb drawn as a gently
-spiralling path (one turn per activity block, not a straight line) up through labelled altitude marks
-(Everest, Kármán line, ISS, … and the Moon when the total reaches it, with a scale break so the Moon fits).
-Two variants as an option: elevation gain (climbed) and total distance (if every km went straight up).
+spiralling path up through labelled altitude marks (Everest, Kármán line, ISS, … and the Moon when the
+total reaches it). Two variants as an option: elevation gain (climbed) and total distance (if every km went
+straight up). As built: a log(1 + km) height scale instead of a scale break, five helix turns, year starts
+marked on the helix (see DECISIONS.md for why not one colour per year).
 
-## Step 7 – Clean-up and verification
+## Step 7 – Clean-up and verification  ✓ done
 
 Review pass over the round's diff (dead code, duplicated helpers, CSS for new parts in dark/light/mobile),
 README + DECISIONS update, performance check with the big fixture (`npm run perf`), full `npm run check`.
+Added at the owner's request: a security and safety pass over the import page and the docs (privacy
+section, "Hide route ends" on route posters, gzip size cap, tighter CSP, SECURITY.md), and a fix for the
+map hover box that stayed visible after the pointer left.

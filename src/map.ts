@@ -153,10 +153,12 @@ export function routeMap(route: number[], o: RouteMapOptions): HTMLElement {
     const dot = svg('circle', { class: 'map-cursor', r: 8 });
     const bg = svg('rect', { class: 'bubble', rx: 8, height: 34 });
     const text = svg('text', { class: 'bubble-text map-bubble-text' });
-    const g = svg('g', { visibility: 'hidden', 'pointer-events': 'none' }, dot, bg, text);
+    // `display` (not `visibility`) hides the group: a child's own visibility could override a hidden parent
+    const g = svg('g', { display: 'none', 'pointer-events': 'none' }, dot, bg, text);
     plot.append(g);
     moveCursor = () => {
-      if (hoverT === null) { g.setAttribute('visibility', 'hidden'); return; }
+      if (hoverT === null) { g.setAttribute('display', 'none'); return; }
+      g.removeAttribute('display'); // shown first, so the text can be measured
       const x = hoverT * (n - 1), i = Math.min(n - 2, Math.floor(x)), f = x - i;
       const [ax, ay] = P(pts[i]!), [bx, by] = P(pts[i + 1]!);
       const px = ax + (bx - ax) * f, py = ay + (by - ay) * f;
@@ -165,9 +167,8 @@ export function routeMap(route: number[], o: RouteMapOptions): HTMLElement {
       const w = textWidth(text, 11) + 20;
       const lx = px + 14 + w > S ? px - 14 - w : px + 14, ly = Math.max(4, Math.min(S - 38, py - 17));
       bg.setAttribute('x', f1(lx)); bg.setAttribute('y', f1(ly)); bg.setAttribute('width', f1(w));
-      bg.setAttribute('visibility', text.textContent ? 'visible' : 'hidden');
+      bg.setAttribute('display', text.textContent ? 'inline' : 'none');
       text.setAttribute('x', f1(lx + 10)); text.setAttribute('y', f1(ly + 23));
-      g.setAttribute('visibility', 'visible');
     };
     o.cursor.on((t) => { hoverT = t; moveCursor(); });
   }

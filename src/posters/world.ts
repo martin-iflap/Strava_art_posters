@@ -1,15 +1,12 @@
 import type { Activity } from '../types';
 import { parts } from '../util/time';
 import { distance, distanceUnit } from '../util/units';
-import { emptyMessage, esc, int, mix, n1, palette, wrapSvg, type Frame, type PosterOptions } from './common';
+import { emptyMessage, esc, fmtCount, int, mix, n1, palette, wrapSvg, type Frame, type Poster, type PosterOptions } from './common';
 
-type Poster = { svg: string; width: number; height: number };
 
 /** Equatorial circumference and mean Earth–Moon distance, metres. */
 export const EARTH_M = 40_075_000;
 export const MOON_M = 384_400_000;
-
-const fmtCount = (c: number) => (c >= 100 ? int(c) : c >= 10 ? n1(c) : (Math.round(c * 100) / 100).toString());
 
 /** Arc along a circle (clockwise from 12 o'clock), angles in laps (0..1). Splits arcs over half a lap. */
 function arc(cx: number, cy: number, r: number, a0: number, a1: number): string {
@@ -34,28 +31,44 @@ export function world(acts: Activity[], o: PosterOptions, f: Frame): Poster {
   const t = f.theme;
   const laps = total / EARTH_M;
   const du = distanceUnit(o.units);
-
-  // Headline
-  const moon = total / MOON_M;
-  const cw = f.w / 3;
-  const col = (i: number, big: string, unit: string, label: string, detail: string) => {
-    const x = f.x + i * cw;
-    return `<text x="${x}" y="${f.y + 88}" font-size="54" font-weight="700" letter-spacing="-2" fill="${t.fg}">${esc(big)}<tspan font-size="30" font-weight="600" dx="3" fill="${t.accent}">${unit}</tspan></text>` +
-      `<text x="${x}" y="${f.y + 118}" font-size="18" font-weight="600" fill="${t.fg}">${esc(label)}</text>` +
-      `<text x="${x}" y="${f.y + 141}" font-size="13" letter-spacing="1" fill="${t.muted}">${esc(detail)}</text>`;
-  };
-  let body = `<text x="${f.x}" y="${f.y + 24}" font-size="18" letter-spacing="3" fill="${t.muted}">YOU WENT</text>` +
-    col(0, fmtCount(laps), '×', 'around the world', `EQUATOR · ${int(distance(EARTH_M, o.units))} ${du.toUpperCase()}`) +
-    col(1, moon >= 1 ? fmtCount(moon) : String(Math.round(moon * 1000) / 10), moon >= 1 ? '×' : '%', moon >= 1 ? 'the way to the Moon' : 'of the way to the Moon', `${int(distance(MOON_M, o.units))} ${du.toUpperCase()} AWAY`) +
-    col(2, int(distance(total, o.units)), du, 'in total', `${int(sel.length)} ACTIVITIES`);
-
-  // Years and legend
+  // Square and landscape frames put the numbers in a column beside the globe; tall ones keep them in a row
+  // above it. Either way the globe gets all the remaining room.
+  const side = f.h < f.w * 1.1;
   const years = [...new Set(sel.map((a) => parts(a.startMs, o.tz).y))].sort((a, b) => a - b);
   const colors = palette(t, years.length);
-  const legendH = years.length > 1 ? 44 : 0;
-  const top = f.y + 180, bottom = f.y + f.h - legendH;
-  const size = Math.min(f.w, bottom - top);
-  const cx = f.x + f.w / 2, cy = top + (bottom - top) / 2;
+  const moon = total / MOON_M;
+  const stats: [string, string, string, string][] = [
+    [fmtCount(laps), '×', 'around the world', `EQUATOR · ${int(distance(EARTH_M, o.units))} ${du.toUpperCase()}`],
+    [moon >= 1 ? fmtCount(moon) : String(Math.round(moon * 1000) / 10), moon >= 1 ? '×' : '%', moon >= 1 ? 'the way to the Moon' : 'of the way to the Moon', `${int(distance(MOON_M, o.units))} ${du.toUpperCase()} AWAY`],
+    [int(distance(total, o.units)), du, 'in total', `${int(sel.length)} ACTIVITIES`],
+  ];
+  const stat = (x: number, y: number, [big, unit, label, detail]: [string, string, string, string]) =>
+    `<text x="${n1(x)}" y="${n1(y + 46)}" font-size="46" font-weight="700" letter-spacing="-2" fill="${t.fg}">${esc(big)}<tspan font-size="26" font-weight="600" dx="3" fill="${t.accent}">${unit}</tspan></text>` +
+    `<text x="${n1(x)}" y="${n1(y + 74)}" font-size="17" font-weight="600" fill="${t.fg}">${esc(label)}</text>` +
+    `<text x="${n1(x)}" y="${n1(y + 95)}" font-size="12" letter-spacing="1" fill="${t.muted}">${esc(detail)}</text>`;
+  const legendItem = (x: number, y: number, i: number) =>
+    `<circle cx="${n1(x + 8)}" cy="${n1(y - 6)}" r="7" fill="${colors[i]}"/><text x="${n1(x + 22)}" y="${n1(y)}" font-size="17" fill="${t.fg}">${years[i]}</text>`;
+  let body = `<text x="${f.x}" y="${f.y + 18}" font-size="16" letter-spacing="3" fill="${t.muted}">YOU WENT</text>`;
+  let area: { x: number; y: number; w: number; h: number };
+  if (side) {
+    const colW = Math.min(300, f.w * 0.34);
+    stats.forEach((st, i) => (body += stat(f.x, f.y + 28 + i * 112, st)));
+    // legend in up to two columns under the numbers
+    const ly = f.y + 28 + stats.length * 112 + 24, rows = Math.ceil(years.length / 2);
+    if (years.length > 1) years.forEach((_, i) => (body += legendItem(f.x + (i >= rows ? colW / 2 : 0), ly + (i % rows) * 28, i)));
+    area = { x: f.x + colW, y: f.y, w: f.w - colW, h: f.h };
+  } else {
+    const cw = f.w / 3;
+    stats.forEach((st, i) => (body += stat(f.x + i * cw, f.y + 26, st)));
+    const legendH = years.length > 1 ? 40 : 0;
+    if (legendH) {
+      const lw = Math.min(150, f.w / years.length), lx = f.x + (f.w - lw * years.length) / 2;
+      years.forEach((_, i) => (body += legendItem(lx + i * lw, f.y + f.h - 8, i)));
+    }
+    area = { x: f.x, y: f.y + 140, w: f.w, h: f.h - 140 - legendH };
+  }
+  const size = Math.min(area.w, area.h);
+  const cx = area.x + area.w / 2, cy = area.y + area.h / 2;
   const R = size / 2 - 36; // room for the quarter labels
   const rings = Math.max(1, Math.ceil(laps));
   const rg = R * (rings === 1 ? 0.8 : rings === 2 ? 0.62 : rings <= 6 ? 0.5 : 0.4); // globe radius
@@ -103,7 +116,7 @@ export function world(acts: Activity[], o: PosterOptions, f: Frame): Poster {
   }
   // Start tick and lap numbers at 12 o'clock.
   body += `<line x1="${n1(cx)}" x2="${n1(cx)}" y1="${n1(cy - r0 + 10)}" y2="${n1(cy - ringR(rings - 1) - 10)}" stroke="${t.fg}" stroke-opacity="0.5" stroke-width="1.2"/>`;
-  const every = gap >= 16 || rings === 1 ? 1 : Math.ceil(16 / Math.max(gap, 1e-9));
+  const every = Math.max(gap >= 16 || rings === 1 ? 1 : Math.ceil(16 / Math.max(gap, 1e-9)), Math.ceil(Math.floor(laps) / 10));
   for (let k = 0; k < Math.floor(laps); k += every) {
     body += `<text x="${n1(cx - 6)}" y="${n1(cy - ringR(k) + 4)}" font-size="${n1(Math.min(13, Math.max(9, gap * 0.6)))}" text-anchor="end" fill="${t.muted}">${k + 1}</text>`;
   }
@@ -112,11 +125,5 @@ export function world(acts: Activity[], o: PosterOptions, f: Frame): Poster {
   const er = ringR(Math.min(rings - 1, Math.floor(laps - 1e-9)));
   body += `<circle cx="${n1(cx + er * Math.sin(endA * 2 * Math.PI))}" cy="${n1(cy - er * Math.cos(endA * 2 * Math.PI))}" r="${n1(Math.max(5, Number(sw) * 0.9))}" fill="${t.fg}"/>`;
 
-  if (legendH) {
-    const lw = Math.min(150, f.w / years.length);
-    const lx = f.x + (f.w - lw * years.length) / 2;
-    body += years.map((y, i) => `<circle cx="${n1(lx + i * lw + 8)}" cy="${n1(f.y + f.h - 14)}" r="7" fill="${colors[i]}"/>` +
-      `<text x="${n1(lx + i * lw + 22)}" y="${n1(f.y + f.h - 8)}" font-size="17" fill="${t.fg}">${y}</text>`).join('');
-  }
   return wrapSvg(f, o, body);
 }

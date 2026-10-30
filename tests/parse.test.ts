@@ -186,3 +186,14 @@ describe('track summary', () => {
     expect(s2.powerHist).toBeNull();
   });
 });
+
+describe('unpacking limits', () => {
+  it('refuses a .gz file whose size field is over the limit, and unpacks normal ones', async () => {
+    const { maybeGunzip, MAX_ENTRY_BYTES } = await import('../src/parse/archive');
+    const z = gzipSync(new TextEncoder().encode('<gpx></gpx>'));
+    expect(new TextDecoder().decode(maybeGunzip(z))).toBe('<gpx></gpx>');
+    const big = z.slice();
+    new DataView(big.buffer).setUint32(big.length - 4, MAX_ENTRY_BYTES + 1, true);
+    expect(() => maybeGunzip(big)).toThrow(/limit/);
+  });
+});

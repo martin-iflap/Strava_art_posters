@@ -1,10 +1,9 @@
 import type { Activity } from '../types';
 import { parts } from '../util/time';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
-import { emptyMessage, esc, int, n1, palette, wrapSvg, type Frame, type PosterOptions } from './common';
+import { emptyMessage, esc, fmtCount, int, n1, niceStep, palette, wrapSvg, type Frame, type Poster, type PosterOptions } from './common';
 import { recentYears } from './more';
 
-type Poster = { svg: string; width: number; height: number };
 const MON = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
 /** Reference mountains, tallest first. */
@@ -62,14 +61,6 @@ export function climbSeries(acts: Activity[], budget = 3000): { pts: [number, nu
   }
   return { pts, starts };
 }
-
-function niceStep(max: number, n: number): number {
-  const raw = max / n, p = 10 ** Math.floor(Math.log10(raw || 1));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= raw) return m * p;
-  return 10 * p;
-}
-
-const fmtCount = (c: number) => (c >= 100 ? int(c) : c >= 10 ? n1(c) : (Math.round(c * 100) / 100).toString());
 
 function headline(totalM: number, o: PosterOptions, f: Frame, kicker: string): string {
   const t = f.theme, eu = elevationUnit(o.units);
@@ -133,13 +124,17 @@ export function climb(acts: Activity[], o: PosterOptions, f: Frame, mode: number
       const latest = i === series.length - 1;
       body += `<path d="${pathOf(s.pts)}" fill="none" stroke="${colors[i]}" stroke-width="${latest ? 4.5 : 2.8}" stroke-opacity="${latest ? 1 : 0.85}" stroke-linejoin="round" stroke-linecap="round"/>`;
     });
-    // De-overlap end labels (at least 24 units apart).
+    // Labels go in the right margin, at least 24 units apart, with a faint leader from each line's end:
+    // a year that ends early would otherwise put its label on top of a later year's line.
     const order = [...ends].sort((a, b) => a.y - b.y);
     let prev = -Infinity;
     for (const e of order) { e.y = Math.max(e.y, prev + 24); prev = e.y; }
+    const lx = px + pw + 14;
     for (const e of ends) {
       const s = series[e.i]!, latest = e.i === series.length - 1;
-      body += `<text x="${n1(X(end(s)[0]) + 12)}" y="${n1(e.y + 5)}" font-size="${latest ? 19 : 17}" font-weight="${latest ? 700 : 400}" fill="${colors[e.i]}">${s.y} · ${int(elevation(end(s)[1], o.units))} ${eu}</text>`;
+      const [ex, ey] = [X(end(s)[0]), Y(end(s)[1])];
+      body += `<path d="M${n1(ex + 4)},${n1(ey)}L${n1(lx - 10)},${n1(ey)}L${n1(lx - 4)},${n1(e.y)}" fill="none" stroke="${colors[e.i]}" stroke-opacity="0.45" stroke-dasharray="2 4"/>` +
+        `<text x="${n1(lx)}" y="${n1(e.y + 5)}" font-size="${latest ? 19 : 17}" font-weight="${latest ? 700 : 400}" fill="${colors[e.i]}">${s.y} · ${int(elevation(end(s)[1], o.units))} ${eu}</text>`;
     }
     return wrapSvg(f, o, body);
   }

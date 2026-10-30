@@ -186,9 +186,15 @@ function renderImport(error?: string): void {
     h('h2', {}, 'How it works'),
     h('ol', { class: 'steps' },
       h('li', {}, 'You give it your Strava export (or GPX, TCX and FIT files from any app or device).'),
-      h('li', {}, 'Your browser reads the files in a background worker in this tab. Nothing is uploaded: there is no server, no account and no tracking.'),
-      h('li', {}, 'Stats and posters are worked out on your device. Closing the tab forgets everything.')),
-    h('p', {}, 'The one exception is the map background behind activity maps: map pictures (never your activities) are loaded from OpenStreetMap volunteers’ servers. Switch it off in the filters for a fully offline app.'),
+      h('li', {}, 'Your browser reads the files in a background worker in this tab. There is no server to upload to, no account, no cookies and no tracking.'),
+      h('li', {}, 'Stats and posters are worked out on your device. Closing or reloading the tab forgets your activities.')),
+    h('h2', { id: 'privacy' }, 'Privacy and safety'),
+    h('ul', { class: 'safety' },
+      feature('What is read', 'Only activities.csv and the GPX, TCX and FIT activity files. The rest of a Strava export (messages, photos, profile, contacts) is never unpacked or read.'),
+      feature('What is kept', 'Nothing from your files. Only two settings are remembered in this browser: light or dark theme, and the map background.'),
+      feature('What goes over the network', 'Only map pictures for the activity maps, from OpenStreetMap or OpenTopoMap. Like any web map, that server sees your IP address and which map squares you look at, so roughly where the activity you opened was. Your files and stats are never sent. Set Map background to Off in the filters and the app makes no requests at all; the page’s security policy blocks every other connection.'),
+      feature('Before you share a poster', 'Route posters leave out the first and last 200 m of every route by default, so your front door is not on them (adjustable with “Hide route ends”). A poster of many routes can still show your part of town. Other posters show no places.'),
+      feature('Files from anyone else', 'Files are treated as data only: nothing in them is ever run, names are shown as plain text, and a file that would unpack to more than 256 MB is refused.')),
     h('h2', {}, 'How to get your Strava export'),
     h('ol', { class: 'steps' },
       h('li', {}, 'On strava.com open Settings → My Account → “Download or Delete Your Account” → “Get Started”.'),
@@ -465,6 +471,8 @@ function posterOpts(acts: Activity[]): PosterOptions {
   if (!o.seasonYear || !years.includes(o.seasonYear)) o.seasonYear = years[0] ?? null;
   if (typeof o.climbYear !== 'string' && (!o.climbYear || !years.includes(o.climbYear))) o.climbYear = years[0] ?? null;
   if (o.worldYear !== 'all' && !years.includes(o.worldYear)) o.worldYear = 'all';
+  if (o.circleYear !== 'all' && !years.includes(o.circleYear)) o.circleYear = 'all';
+  if (o.spaceYear !== 'all' && !years.includes(o.spaceYear)) o.spaceYear = 'all';
   if (o.facetYear !== 'all' && !years.includes(o.facetYear)) o.facetYear = 'all';
   if (o.overlayYear !== 'all' && !years.includes(o.overlayYear)) o.overlayYear = 'all';
   if (!o.todYear || !years.includes(o.todYear)) o.todYear = years[0] ?? null;
@@ -506,16 +514,23 @@ function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLElemen
     selectControl(label, value, options, on, { ariaLabel: `${posterName(t)}: ${label}`, after });
   const o = posterOpts(acts);
   const years = yearsOf(acts).map((y): [string, string] => [String(y), String(y)]);
+  // Shared by both route posters: trims every route so the poster does not show where you start (home).
+  const hideEnds = () => pick('Hide route ends', String(poster.hideEnds), [['0', 'Off'], ['200', '200 m'], ['500', '500 m'], ['1000', '1 km']], (v) => (poster.hideEnds = Number(v)));
   switch (t) {
     case 'facets': return [
       pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v)),
       pick('Period', String(o.facetYear), [['all', 'All time'], ...years], (v) => (poster.facetYear = v === 'all' ? 'all' : Number(v))),
+      hideEnds(),
       ...regionControl(t, acts, poster.facetRegions, (c) => (poster.facetRegions = c), after)];
     case 'overlay': return [
       pick('Period', String(o.overlayYear), [['all', 'All time'], ...years], (v) => (poster.overlayYear = v === 'all' ? 'all' : Number(v))),
+      hideEnds(),
       ...regionControl(t, acts, poster.overlayRegions, (c) => (poster.overlayRegions = c), after)];
     case 'calendar': case 'rings': case 'cumulative': return [pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v))];
-    case 'circles': return [pick('Colour by', poster.circleColor, [['year', 'Year'], ['sport', 'Sport']], (v) => (poster.circleColor = v))];
+    case 'circles': return [
+      pick('Period', String(o.circleYear), [['all', 'All time'], ...years], (v) => (poster.circleYear = v === 'all' ? 'all' : Number(v))),
+      pick('Clusters', poster.circleGroup, [['none', 'One pack'], ['year', 'One per year'], ['sport', 'One per sport']], (v) => (poster.circleGroup = v)),
+      pick('Colour by', poster.circleColor, [['year', 'Year'], ['sport', 'Sport']], (v) => (poster.circleColor = v))];
     case 'timeofday': return [pick('Rows', poster.todRows, [['year', 'Years'], ['month', 'Months'], ['weekday', 'Weekdays']], (v) => (poster.todRows = v))];
     case 'punchcard': return [pick('Dot size', poster.punchMetric, [['count', 'Activities'], ['distance', 'Distance']], (v) => (poster.punchMetric = v))];
     case 'ridgelines': return [
@@ -525,6 +540,13 @@ function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLElemen
     case 'climb': return [pick('Period', String(o.climbYear), [...years, ['all', 'All time'], ['overlay', 'All years overlaid']], (v) => (poster.climbYear = v === 'all' || v === 'overlay' ? v : Number(v)))];
     case 'world': return [pick('Period', String(o.worldYear), [['all', 'All time'], ...years], (v) => (poster.worldYear = v === 'all' ? 'all' : Number(v)))];
     case 'todweek': return [pick('Year', String(o.todYear), years, (v) => (poster.todYear = Number(v)))];
+    case 'landscape': return [
+      pick('Activities', poster.landSelect, [['recent', 'Most recent'], ['longest', 'Longest'], ['climbiest', 'Biggest climbs']], (v) => (poster.landSelect = v)),
+      pick('Count', String(poster.landCount), ['25', '50', '100', '200'].map((c): [string, string] => [c, c]), (v) => (poster.landCount = Number(v))),
+      pick('Height', poster.landHeight, [['relative', 'From the start'], ['absolute', 'Above sea level']], (v) => (poster.landHeight = v))];
+    case 'space': return [
+      pick('Measure', poster.spaceMetric, [['climb', 'Climbing'], ['distance', 'Distance']], (v) => (poster.spaceMetric = v)),
+      pick('Period', String(o.spaceYear), [['all', 'All time'], ...years], (v) => (poster.spaceYear = v === 'all' ? 'all' : Number(v)))];
     default: return [];
   }
 }
@@ -640,6 +662,7 @@ function posterSection(acts: Activity[]): HTMLElement {
   setTimeout(() => next(0), 0);
   return h('div', {}, sec,
     h('p', {}, 'Every poster from your data. Select one to view it full screen and flip through them with the arrow keys. Theme and size apply to all of them.'),
+    h('p', { class: 'muted small' }, 'Before you share a poster online: the two route posters leave out the first and last 200 m of every route by default (“Hide route ends”), so your front door is not on them. A poster of many routes can still show which part of town you live in. The other posters show no places.'),
     controls, allStatus, h('div', { class: 'gallery' }, ...cards));
 }
 

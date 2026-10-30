@@ -1,9 +1,8 @@
 import type { Activity } from '../types';
 import { dayNumber, hourOf, parts } from '../util/time';
 import { distance, distanceUnit } from '../util/units';
-import { emptyMessage, esc, int, mix, n1, palette, ramp, wrapSvg, type Frame, type PosterOptions } from './common';
+import { emptyMessage, esc, int, mix, n1, palette, ramp, wrapSvg, type Frame, type Poster, type PosterOptions } from './common';
 
-type Poster = { svg: string; width: number; height: number };
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -20,28 +19,36 @@ const metricShow = (v: number, o: PosterOptions) => (o.calendarMetric === 'dista
 
 const MAX_BUBBLES = 1000;
 
-/** Greedy spiral packing with a spatial hash. Radii are in units where the biggest circle has r = 1. */
+/**
+ * Greedy spiral packing with a spatial hash. Radii are in units where the biggest circle has r = 1, sorted
+ * biggest first; `gap` is the space between circles.
+ */
 export function packCircles(radii: number[], gap = 0.04): { x: number; y: number; r: number }[] {
   const out: { x: number; y: number; r: number }[] = [];
-  const CELL = 2.2;
-  const grid = new Map<string, number[]>();
-  const key = (cx: number, cy: number) => `${cx},${cy}`;
+  // Cells at least as big as the largest possible centre distance, so only neighbouring cells need checking.
+  const CELL = Math.max(2.2, 2.05 + gap);
+  const grid = new Map<number, number[]>();
+  const key = (cx: number, cy: number) => (cx + 32768) * 65536 + (cy + 32768);
   const fits = (x: number, y: number, r: number) => {
     const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
     for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
-      for (const k of grid.get(key(cx + i, cy + j)) ?? []) {
+      const cell = grid.get(key(cx + i, cy + j));
+      if (!cell) continue;
+      for (const k of cell) {
         const c = out[k]!;
         if ((c.x - x) ** 2 + (c.y - y) ** 2 < (c.r + r + gap) ** 2) return false;
       }
     }
     return true;
   };
-  let extent = 0;
+  let extent = 0, lastRad = 0;
   radii.forEach((r, i) => {
     let x = 0, y = 0;
     if (i > 0) {
       const pitch = Math.max(r * 0.9, 0.04);
-      let rad = Math.max(0, extent * 0.55 - 2);
+      // Start a little inside the previous circle's distance from the centre: circles come biggest first,
+      // so the pack fills outward, and searching the full interior again (as before) was the slow part.
+      let rad = Math.max(0, Math.min(extent * 0.55 - 2, lastRad - 1 - 2 * r));
       let th = 0;
       for (;;) {
         x = rad * Math.cos(th); y = rad * Math.sin(th);
@@ -50,6 +57,7 @@ export function packCircles(radii: number[], gap = 0.04): { x: number; y: number
         th += dth;
         rad += (pitch * dth) / (2 * Math.PI);
       }
+      lastRad = rad;
     }
     out.push({ x, y, r });
     const k = key(Math.floor(x / CELL), Math.floor(y / CELL));
@@ -59,28 +67,90 @@ export function packCircles(radii: number[], gap = 0.04): { x: number; y: number
   return out;
 }
 
+/**
+ * One circle per activity, area showing distance, packed together. With `circleGroup` set, activities are
+ * packed into one cluster per year or per sport, laid out in a grid; all clusters share one scale so their
+ * sizes compare.
+ */
+/**
+ * Centres (in a w × h box) and the shared scale `k` for clusters of the given radii, each with a label of
+ * height `labelH` under it. 'grid' keeps the order (reading order, last row centred; for years), 'pack'
+ * packs big and small clusters together (for sports, whose sizes differ a lot).
+ */
+export function clusterLayout(radii: number[], mode: 'grid' | 'pack', w: number, h: number, labelH: number): { x: number; y: number; k: number }[] {
+  const maxR = Math.max(...radii);
+  if (radii.length === 1 || mode === 'grid') {
+    // the column count that gives the biggest cells; the largest cluster fills its cell
+    let cols = 1, cell = 0;
+    for (let c = 1; c <= radii.length; c++) {
+      const size = Math.min(w / c, h / Math.ceil(radii.length / c) - labelH);
+      if (size > cell) { cell = size; cols = c; }
+    }
+    const rows = Math.ceil(radii.length / cols), k = cell / 2 / maxR;
+    const gx = (w - cols * cell) / cols, gy = (h - rows * (cell + labelH)) / rows;
+    return radii.map((_, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const inRow = row === rows - 1 ? radii.length - row * cols : cols;
+      return { x: (w - inRow * (cell + gx)) / 2 + col * (cell + gx) + gx / 2 + cell / 2, y: row * (cell + labelH + gy) + gy / 2 + cell / 2, k };
+    });
+  }
+  // Pack the clusters as circles (biggest first), with room for the labels; the gap depends on the final
+  // scale, so pack twice.
+  const order = radii.map((r, i) => ({ r: r / maxR, i })).sort((a, b) => b.r - a.r);
+  const fitOnce = (gap: number) => {
+    const placed = packCircles(order.map((c) => c.r), gap);
+    const x0 = Math.min(...placed.map((c) => c.x - c.r)), x1 = Math.max(...placed.map((c) => c.x + c.r));
+    const y0 = Math.min(...placed.map((c) => c.y - c.r)), y1 = Math.max(...placed.map((c) => c.y + c.r));
+    const k = Math.min(w / (x1 - x0), (h - labelH) / (y1 - y0));
+    const ox = (w - (x1 - x0) * k) / 2 - x0 * k, oy = (h - labelH - (y1 - y0) * k) / 2 - y0 * k;
+    return { placed, k, ox, oy };
+  };
+  let fit = fitOnce(0.3);
+  fit = fitOnce((labelH + 12) / fit.k);
+  const out: { x: number; y: number; k: number }[] = new Array(radii.length);
+  order.forEach((c, j) => { const p = fit.placed[j]!; out[c.i] = { x: fit.ox + p.x * fit.k, y: fit.oy + p.y * fit.k, k: fit.k / maxR }; });
+  return out;
+}
+
 export function circles(acts: Activity[], o: PosterOptions, f: Frame): Poster {
   const items = acts.filter((a) => a.distanceM > 0).sort((a, b) => b.distanceM - a.distanceM).slice(0, MAX_BUBBLES);
   if (!items.length) return wrapSvg(f, o, emptyMessage(f, 'No activities with distance in this selection'));
-  const keyOf = (a: Activity) => (o.circleColor === 'sport' ? a.sport : String(parts(a.startMs, o.tz).y));
-  const counts = new Map<string, number>();
-  for (const a of items) counts.set(keyOf(a), (counts.get(keyOf(a)) ?? 0) + 1);
-  const keys = [...counts.keys()].sort(o.circleColor === 'sport' ? (a, b) => counts.get(b)! - counts.get(a)! : undefined);
+  const yearOf = (a: Activity) => String(parts(a.startMs, o.tz).y);
+  const ranked = (keyOf: (a: Activity) => string, byCount: boolean): string[] => {
+    const counts = new Map<string, number>();
+    for (const a of items) counts.set(keyOf(a), (counts.get(keyOf(a)) ?? 0) + 1);
+    return [...counts.keys()].sort(byCount ? (a, b) => counts.get(b)! - counts.get(a)! : undefined);
+  };
+  const colorOf = o.circleColor === 'sport' ? (a: Activity) => a.sport : yearOf;
+  const keys = ranked(colorOf, o.circleColor === 'sport');
   const colors = palette(f.theme, keys.length);
   const maxD = Math.sqrt(items[0]!.distanceM);
-  const placed = packCircles(items.map((a) => Math.sqrt(a.distanceM) / maxD));
-  const extent = Math.max(...placed.map((c) => Math.hypot(c.x, c.y) + c.r));
-  const legendH = 48;
-  const R = Math.min(f.w, f.h - legendH) / 2;
-  const k = R / extent;
-  const cx = f.x + f.w / 2, cy = f.y + (f.h - legendH) / 2;
-  const body = placed.map((c, i) => `<circle cx="${n1(cx + c.x * k)}" cy="${n1(cy + c.y * k)}" r="${n1(c.r * k)}" fill="${colors[keys.indexOf(keyOf(items[i]!))]}" fill-opacity="0.88"/>`).join('');
+  const groupOf = o.circleGroup === 'sport' ? (a: Activity) => a.sport : o.circleGroup === 'year' ? yearOf : () => '';
+  const clusters = ranked(groupOf, o.circleGroup === 'sport').map((name) => {
+    const members = items.filter((a) => groupOf(a) === name);
+    const placed = packCircles(members.map((a) => Math.sqrt(a.distanceM) / maxD));
+    return { name, members, placed, extent: Math.max(...placed.map((c) => Math.hypot(c.x, c.y) + c.r)) };
+  });
+
+  const legendH = keys.length > 1 ? 48 : 0;
+  const labelH = clusters.length > 1 ? 40 : 0;
+  const centres = clusterLayout(clusters.map((c) => c.extent), o.circleGroup === 'year' ? 'grid' : 'pack', f.w, f.h - legendH, labelH);
+  let body = '';
+  clusters.forEach((cl, ci) => {
+    const { x: cx, y: cy, k } = centres[ci]!;
+    const x = f.x + cx, y = f.y + cy;
+    body += cl.placed.map((c, i) => `<circle cx="${n1(x + c.x * k)}" cy="${n1(y + c.y * k)}" r="${n1(Math.max(0.4, c.r * k))}" fill="${colors[keys.indexOf(colorOf(cl.members[i]!))]}" fill-opacity="0.88"/>`).join('');
+    if (labelH) {
+      body += `<text x="${n1(x)}" y="${n1(y + cl.extent * k + 26)}" text-anchor="middle" font-size="18" font-weight="600" fill="${f.theme.fg}">${esc(cl.name)}` +
+        `<tspan font-weight="400" fill="${f.theme.muted}"> · ${int(cl.members.length)}</tspan></text>`;
+    }
+  });
   let lx = f.x;
-  const legend = keys.map((key, i) => {
+  const legend = legendH ? keys.map((key, i) => {
     const x = lx;
     lx += 30 + key.length * 11 + 22;
     return `<circle cx="${x + 7}" cy="${f.y + f.h - 16}" r="7" fill="${colors[i]}"/><text x="${x + 22}" y="${f.y + f.h - 10}" font-size="18" fill="${f.theme.muted}">${esc(key)}</text>`;
-  }).join('');
+  }).join('') : '';
   return wrapSvg(f, o, `<g>${body}</g>${legend}`);
 }
 

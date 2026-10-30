@@ -12,7 +12,11 @@ export interface RawInput {
   data: Blob | Uint8Array;
 }
 
-const MAX_ENTRY_BYTES = 256 * 1024 * 1024;
+/**
+ * Largest file the app will unpack (a ZIP entry or a .gz activity file). Real activity files are a few MB;
+ * the cap stops a small, hostile archive from expanding into gigabytes and crashing the tab.
+ */
+export const MAX_ENTRY_BYTES = 256 * 1024 * 1024;
 
 export const normPath = (p: string) => p.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '');
 
@@ -52,6 +56,13 @@ export async function expandInputs(inputs: RawInput[]): Promise<VFile[]> {
   return out;
 }
 
+/**
+ * Unpack gzip data. The size comes from the gzip trailer; fflate never writes more than that, so checking
+ * it caps the memory used even when the trailer lies (the output is then cut short and fails to parse).
+ */
 export function maybeGunzip(b: Uint8Array): Uint8Array {
-  return isGzip(b) ? gunzipSync(b) : b;
+  if (!isGzip(b)) return b;
+  const size = b.length >= 18 ? new DataView(b.buffer, b.byteOffset + b.length - 4, 4).getUint32(0, true) : 0;
+  if (size > MAX_ENTRY_BYTES) throw new Error(`unpacks to ${Math.round(size / 1024 / 1024)} MB, more than the ${MAX_ENTRY_BYTES / 1024 / 1024} MB limit`);
+  return gunzipSync(b);
 }
