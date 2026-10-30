@@ -1,0 +1,52 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f5f5f7; --card: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.1); --accent: #0a84ff; --accent-text: #fff;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #98989d; --line: rgba(255,255,255,.14); --accent: #0a84ff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+main { max-width: 1080px; margin: 0 auto; padding: 24px 20px 80px; }
+h1 { font-size: 28px; margin: 0; letter-spacing: -.02em; }
+h2 { font-size: 20px; margin: 36px 0 12px; letter-spacing: -.01em; }
+h3 { font-size: 15px; margin: 20px 0 8px; color: var(--muted); font-weight: 600; }
+p, li { color: var(--muted); }
+.sub { margin: 4px 0 0; }
+.card { background: var(--card); border-radius: 16px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(0,0,0,.06); overflow-x: auto; }
+button, select, input { font: inherit; color: inherit; }
+button, .btn { border: 0; border-radius: 999px; padding: 8px 16px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); box-shadow: none; }
+button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible, .drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+select, input[type=number] { border-radius: 10px; border: 1px solid var(--line); background: var(--card); padding: 6px 10px; }
+input[type=number] { width: 90px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.toolbar { position: sticky; top: 0; z-index: 5; margin: 16px -20px 0; padding: 10px 20px; background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(16px); border-bottom: 1px solid var(--line); }
+.toolbar label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.drop { margin-top: 24px; border: 2px dashed var(--line); border-radius: 20px; padding: 48px 24px; text-align: center; background: var(--card); }
+.drop.over { border-color: var(--accent); }
+.drop h2 { margin-top: 0; }
+progress { width: 100%; height: 8px; margin-top: 16px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; }
+tbody tr:last-child td { border-bottom: 0; }
+.num { text-align: right; }
+.scroll { max-height: 420px; overflow: auto; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.stat { background: var(--card); border-radius: 16px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.stat b { display: block; font-size: 22px; letter-spacing: -.01em; }
+.stat span { color: var(--muted); font-size: 13px; }
+.muted { color: var(--muted); }
+.warn { color: #ff9f0a; }
+.loops { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.loop { display: flex; gap: 12px; align-items: center; background: var(--card); border-radius: 16px; padding: 12px; }
+.loop svg { width: 90px; height: 90px; flex: none; stroke: var(--accent); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.loop dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 0 10px; font-size: 13px; }
+.loop dt { color: var(--muted); } .loop dd { margin: 0; text-align: right; }
+details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); }
+.zbar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; min-width: 120px; background: var(--line); }
+.zbar i { display: block; height: 100%; }
+@media (max-width: 640px) { main { padding: 16px 14px 60px; } .toolbar { margin: 12px -14px 0; padding: 8px 14px; } }
+@media (prefers-reduced-motion: no-preference) { .drop { transition: border-color .2s; } }
