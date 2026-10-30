@@ -190,7 +190,7 @@ function renderImport(error?: string): void {
       h('li', {}, 'Stats and posters are worked out on your device. Closing or reloading the tab forgets your activities.')),
     h('h2', { id: 'privacy' }, 'Privacy and safety'),
     h('ul', { class: 'safety' },
-      feature('What is read', 'Only activities.csv and the GPX, TCX and FIT activity files. The rest of a Strava export (messages, photos, profile, contacts) is never unpacked or read.'),
+      feature('What is read', 'Only activities.csv and the GPX, TCX and FIT activity files. The rest of a Strava export (photos, messages, profile, contacts) is skipped by name and never opened: from a ZIP, only the activity files are read, so a large export with photos loads quickly.'),
       feature('What is kept', 'Nothing from your files. Only two settings are remembered in this browser: light or dark theme, and the map background.'),
       feature('What goes over the network', 'Only map pictures for the activity maps, from OpenStreetMap or OpenTopoMap. Like any web map, that server sees your IP address and which map squares you look at, so roughly where the activity you opened was. Your files and stats are never sent. Set Map background to Off in the filters and the app makes no requests at all; the page’s security policy blocks every other connection.'),
       feature('Before you share a poster', 'Route posters leave out the first and last 200 m of every route by default, so your front door is not on them (adjustable with “Hide route ends”). A poster of many routes can still show your part of town. Other posters show no places.'),

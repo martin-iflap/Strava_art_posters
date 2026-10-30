@@ -11,7 +11,7 @@ const CSP = [
   "script-src 'self'",
   "style-src 'self'",
   "img-src 'self' blob: data: https://tile.openstreetmap.org https://a.tile.opentopomap.org https://b.tile.opentopomap.org https://c.tile.opentopomap.org",
-  "worker-src 'self' blob:",
+  "worker-src 'self'",
   "connect-src 'none'",
   "object-src 'none'",
   "base-uri 'none'",
@@ -24,6 +24,10 @@ const HEADERS = {
   // OpenStreetMap refuses tile requests without a referrer, so not no-referrer.
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+  // Older browsers that ignore frame-ancestors; and no other site keeps a handle on this window or its files.
+  'X-Frame-Options': 'DENY',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Resource-Policy': 'same-origin',
 };
 
 const csp = (): Plugin => ({
@@ -42,6 +46,7 @@ export default defineConfig({
   base: './',
   plugins: [csp()],
   worker: { format: 'es' },
-  build: { target: 'es2022', sourcemap: false },
+  // No module-preload polyfill: it is the bundle's only fetch() call, and connect-src 'none' would block it anyway.
+  build: { target: 'es2022', sourcemap: false, modulePreload: { polyfill: false } },
   test: { include: ['tests/**/*.test.ts'] },
 } as never);

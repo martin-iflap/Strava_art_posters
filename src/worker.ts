@@ -26,7 +26,7 @@ ctx.onmessage = async (e) => {
     const tooBig = err instanceof RangeError || /allocation|memory|too large/i.test(msg);
     ctx.postMessage({
       type: 'error',
-      message: tooBig ? 'This file is too large for the browser to read in one piece. Extract the ZIP and drop the extracted folder instead.' : msg,
+      message: tooBig ? 'The browser ran out of memory reading this export. Close other tabs and try again, or drop only activities.csv and the activities folder.' : msg,
     });
   }
 };

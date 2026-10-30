@@ -1,15 +1,13 @@
 {
   "name": "ride-atlas",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "fixtures": "tsx scripts/generate-fixtures.ts",
     "screenshots": "tsx scripts/screenshots.ts",
-    "perf": "tsx scripts/perf.ts",
     "examples": "tsx scripts/examples.ts",
     "check": "npm test && npm run build && npm run screenshots"
   },
