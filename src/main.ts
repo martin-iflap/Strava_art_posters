@@ -9,6 +9,8 @@ import { activityZones, hrZones, observedMaxHr, powerZones, zoneTotals, zonesBy,
 import type { Activity, ImportResult, Tz, Units } from './types';
 import { distance, distanceUnit, elevation, elevationUnit, formatDuration, formatHours, speed, speedUnit } from './util/units';
 import { parts, ymd } from './util/time';
+import { DEFAULT_POSTER, POSTER_TYPES, SIZES, THEMES, latestYear, renderPoster, type PosterOptions, type PosterType } from './posters';
+import { svgToPng } from './posters/raster';
 import type { WorkerIn, WorkerOut } from './worker';
 
 interface State {
@@ -19,9 +21,12 @@ interface State {
   hr: HrZoneConfig | null;
   ftp: number | null;
   showAll: boolean;
+  view: 'stats' | 'posters';
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats' };
+const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
+let previewUrl: string | null = null;
 const app = document.getElementById('app')!;
 const ZONE_COLORS = ['#8e8e93', '#30b0c7', '#34c759', '#ff9f0a', '#ff453a', '#bf5af2', '#ff2d55'];
 
@@ -140,7 +145,10 @@ function render(): void {
       h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
         ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
 
+  const viewBtn = (v: State['view'], label: string) =>
+    h('button', { class: state.view === v ? 'primary' : '', 'aria-pressed': String(state.view === v), onclick: () => { state.view = v; render(); } }, label);
   const toolbar = h('div', { class: 'toolbar row', role: 'toolbar', 'aria-label': 'Filters' },
+    h('div', { class: 'row seg', role: 'group', 'aria-label': 'View' }, viewBtn('stats', 'Stats'), viewBtn('posters', 'Posters')),
     select('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
     select('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
     select('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
@@ -150,6 +158,12 @@ function render(): void {
 
   if (!all.length) {
     main.append(h('p', { class: 'warn', role: 'alert' }, 'No activities could be read from this export.'), issuesSection(result));
+    app.replaceChildren(main);
+    return;
+  }
+
+  if (state.view === 'posters') {
+    main.append(posterSection(acts));
     app.replaceChildren(main);
     return;
   }
@@ -218,6 +232,51 @@ function summaryTable(label: string, rows: [string, Summary][]): HTMLElement {
     [label, 'Activities', `Distance (${distanceUnit(u)})`, 'Moving time', `Elevation (${elevationUnit(u)})`, `Avg dist (${distanceUnit(u)})`, `Median (${distanceUnit(u)})`, `Avg speed (${speedUnit(u)})`, 'Avg HR', 'Avg W'],
     rows.map(([k, s]) => [k, s.count, dist(s.distanceM), formatHours(s.movingS), elev(s.elevGainM), dist(s.avgDistanceM), dist(s.medianDistanceM), fmt(speed(s.avgSpeedMps, u)), opt(s.avgHr), opt(s.avgPower)]),
   );
+}
+
+// ---------- posters ----------
+
+function posterSection(acts: Activity[]): HTMLElement {
+  const sec = h('div', {}, h('h2', { id: 'posters' }, 'Posters'));
+  if (!acts.length) return h('div', {}, sec, h('p', {}, 'No activities for this sport.'));
+  const opts: PosterOptions = { ...poster, units: state.units, tz: state.tz, sportLabel: state.sport === 'all' ? 'All activities' : state.sport };
+  const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
+    h('label', {}, label, h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
+      ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
+  const controls = h('div', { class: 'row card controls' },
+    pick('Poster', poster.type, POSTER_TYPES.map((t): [PosterType, string] => [t.id, t.name]), (v) => (poster.type = v)),
+    pick('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v)),
+    pick('Size', poster.size, SIZES.map((s): [string, string] => [s.id, s.name]), (v) => (poster.size = v)),
+    h('label', {}, h('input', { type: 'checkbox', checked: poster.strip, onchange: (e) => { poster.strip = (e.target as HTMLInputElement).checked; render(); } }), 'Stats strip'));
+  if (poster.type === 'facets') controls.append(pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v)));
+  if (poster.type === 'calendar') controls.append(pick('Colour by', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v)));
+  if (poster.type === 'ridgelines') {
+    controls.append(
+      pick('Activities', poster.ridgeSelect, [['recent', 'Most recent'], ['longest', 'Longest'], ['climbiest', 'Biggest climbs']], (v) => (poster.ridgeSelect = v)),
+      pick('Count', String(poster.ridgeCount), ['15', '30', '45', '60'].map((c): [string, string] => [c, c]), (v) => (poster.ridgeCount = Number(v))));
+  }
+  if (poster.type === 'season') {
+    const years = [...new Set(acts.map((a) => parts(a.startMs, state.tz).y))].sort((a, b) => b - a);
+    const cur = poster.seasonYear && years.includes(poster.seasonYear) ? poster.seasonYear : latestYear(acts, state.tz)!;
+    opts.seasonYear = cur;
+    controls.append(pick('Year', String(cur), years.map((y): [string, string] => [String(y), String(y)]), (v) => (poster.seasonYear = Number(v))));
+  }
+  const result = renderPoster(poster.type, acts, opts);
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(new Blob([result.svg], { type: 'image/svg+xml' }));
+  const name = POSTER_TYPES.find((t) => t.id === poster.type)!.name;
+  const file = (ext: string) => exportFilename(acts, state.sport, `poster-${poster.type}`, ext, state.tz);
+  const status = h('span', { class: 'muted', role: 'status' });
+  const dl = h('div', { class: 'row' },
+    h('button', { id: 'dl-png', class: 'primary', onclick: async () => {
+      status.textContent = 'Rendering PNG…';
+      try { download(file('png'), await svgToPng(result.svg, result.width, result.height), 'image/png'); status.textContent = `${result.width} × ${result.height} px`; }
+      catch (e) { status.textContent = e instanceof Error ? e.message : String(e); }
+    } }, 'Download PNG'),
+    h('button', { id: 'dl-svg', onclick: () => download(file('svg'), result.svg, 'image/svg+xml') }, 'Download SVG'),
+    status);
+  const img = h('img', { id: 'poster-preview', class: 'poster', src: previewUrl, alt: `${name} poster preview`, width: result.width, height: result.height });
+  return h('div', {}, sec, controls, h('div', { class: 'poster-wrap' }, img), dl);
 }
 
 // ---------- zones ----------

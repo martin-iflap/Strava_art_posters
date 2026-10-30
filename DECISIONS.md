@@ -17,3 +17,12 @@
 - The fixture generator lives in src/demo/generate.ts (pure TS, also powers the in-app demo button); scripts/generate-fixtures.ts writes it to gitignored fixtures/. Tests generate data in memory, so no fixtures are committed.
 - CSP is injected only in production builds (dev server needs inline HMR); the screenshot check serves the production build so CSP violations surface as console errors.
 - ZIPs are read fully into memory (fflate); entries are inflated lazily one at a time.
+
+## M2
+- Posters are pure functions (activities + options → SVG string) in src/posters/; the SVG viewBox is always 1000 units wide, and width/height attributes carry the output pixel size (A3 3508×4961, square 3000², phone 1290×2796). PNG = SVG drawn to a canvas via a blob: URL (CSP-safe); SVG is downloaded as is.
+- Themes: light, dark, plus two accents (ember, aurora). Poster text uses the system font stack, so PNG typography depends on the viewer's installed fonts.
+- Route overlay fits to the 2nd–98th percentile of all points and clips the rest, so one far-away trip does not shrink everything else. Glow = blurred wide stroke + thin crisp strokes via `<use>` (no blend modes, for portability).
+- Calendar shows up to the 8 most recent years, colour levels by quartiles of non-zero days. Ridgelines use equal-width profiles (not distance-proportional) scaled by the 90th-percentile elevation range; selection = most recent / longest / biggest climbs, N of 15–60.
+- Season overview covers one calendar year (picker); it already shows totals, so the optional stats strip is not drawn on it.
+- Sport filter, unit toggle and loop-detection UI already shipped in M1; they now also drive the posters.
+- Screenshot check also downloads each poster as PNG and SVG and verifies pixel dimensions.

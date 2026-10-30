@@ -4,7 +4,7 @@
  * Usage: npm run build && npm run screenshots
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { zipSync } from 'fflate';
 import { chromium, type Browser, type Page } from 'playwright';
 import { generate } from '../src/demo/generate';
@@ -84,6 +84,41 @@ async function main(): Promise<void> {
         await ctx.close();
       }
     }
+
+    // Posters: render every type from demo data, download PNG + SVG, verify dimensions.
+    const plan: [string, string, string, string][] = [
+      ['Route facets', 'dark', 'a3', 'facets'], ['All routes', 'ember', 'a3', 'overlay'], ['Calendar heatmap', 'light', 'a3', 'calendar'],
+      ['Elevation ridgelines', 'aurora', 'a3', 'ridgelines'], ['Season overview', 'dark', 'a3', 'season'],
+      ['Route facets', 'light', 'phone', 'facets-phone'], ['All routes', 'dark', 'square', 'overlay-square'],
+    ];
+    const pctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+    const pp = await pctx.newPage();
+    watch(pp, 'posters');
+    await pp.goto(ORIGIN);
+    await pp.click('#demo');
+    await pp.waitForSelector('#export', { timeout: 60_000 });
+    await pp.getByRole('button', { name: 'Posters' }).click();
+    for (const [type, theme, size, name] of plan) {
+      await pp.locator('.controls select').nth(0).selectOption({ label: type });
+      await pp.locator('.controls select').nth(1).selectOption(theme);
+      await pp.locator('.controls select').nth(2).selectOption(size);
+      await pp.waitForSelector('#poster-preview');
+      await pp.waitForFunction(() => (document.querySelector('#poster-preview') as HTMLImageElement).complete);
+      const [dl] = await Promise.all([pp.waitForEvent('download', { timeout: 60_000 }), pp.click('#dl-png')]);
+      const file = `screenshots/poster-${name}.png`;
+      await dl.saveAs(file);
+      const png = readFileSync(file);
+      const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
+      const want = size === 'a3' ? [3508, 4961] : size === 'square' ? [3000, 3000] : [1290, 2796];
+      if (w !== want[0] || h !== want[1]) problems.push(`poster ${name}: PNG is ${w}x${h}, expected ${want.join('x')}`);
+      const [sv] = await Promise.all([pp.waitForEvent('download'), pp.click('#dl-svg')]);
+      await sv.saveAs(`screenshots/poster-${name}.svg`);
+      const svgText = readFileSync(`screenshots/poster-${name}.svg`, 'utf8');
+      if (!svgText.startsWith('<svg') || /NaN|undefined/.test(svgText)) problems.push(`poster ${name}: bad SVG output`);
+      console.log('poster', name, `${w}x${h}`, `${Math.round(png.length / 1024)} KB`, `svg ${Math.round(svgText.length / 1024)} KB`);
+    }
+    await shoot(pp, 'posters-page');
+    await pctx.close();
 
     // Real upload path: a ZIP chosen through the file picker.
     const { files } = generate({ seed: 3, density: 0.15 });

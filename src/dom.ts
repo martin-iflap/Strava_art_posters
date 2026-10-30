@@ -38,8 +38,8 @@ export function table(head: string[], rows: Child[][], opts: { numFrom?: number;
   );
 }
 
-export function download(filename: string, text: string, mime: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+export function download(filename: string, data: string | Blob, mime: string): void {
+  const url = URL.createObjectURL(typeof data === 'string' ? new Blob([data], { type: mime }) : data);
   const a = h('a', { href: url, download: filename });
   document.body.append(a);
   a.click();
