@@ -22,13 +22,52 @@ interface State {
   ftp: number | null;
   showAll: boolean;
   view: 'stats' | 'posters';
+  theme: 'auto' | 'light' | 'dark';
+  sheet: boolean;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats' };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', theme: 'auto', sheet: false };
+let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 let previewUrl: string | null = null;
 const app = document.getElementById('app')!;
 const ZONE_COLORS = ['#8e8e93', '#30b0c7', '#34c759', '#ff9f0a', '#ff453a', '#bf5af2', '#ff2d55'];
+
+/** Scrollable tables must be keyboard-focusable and named: label each with the heading above it. */
+function labelScrollables(root: HTMLElement): void {
+  let heading = 'Table';
+  root.querySelectorAll('h2, h3, summary, .card').forEach((el) => {
+    if (/^(H2|H3|SUMMARY)$/.test(el.tagName)) heading = el.textContent?.trim() || heading;
+    else if (el.querySelector('table')) {
+      el.setAttribute('tabindex', '0');
+      el.setAttribute('role', 'region');
+      el.setAttribute('aria-label', `${heading} table`);
+    }
+  });
+}
+
+// ---------- theme ----------
+
+function applyTheme(): void {
+  if (state.theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = state.theme;
+}
+try {
+  const saved = localStorage.getItem('ride-atlas-theme');
+  if (saved === 'light' || saved === 'dark') state.theme = saved;
+} catch { /* storage unavailable: stay on auto */ }
+applyTheme();
+
+function themeToggle(): HTMLElement {
+  const btn = (t: State['theme'], label: string) =>
+    h('button', { 'aria-pressed': String(state.theme === t), onclick: () => {
+      state.theme = t;
+      try { if (t === 'auto') localStorage.removeItem('ride-atlas-theme'); else localStorage.setItem('ride-atlas-theme', t); } catch { /* ignore */ }
+      applyTheme();
+      document.querySelectorAll('.theme-toggle').forEach((el) => el.replaceWith(themeToggle()));
+    } }, label);
+  return h('div', { class: 'seg theme-toggle', role: 'group', 'aria-label': 'Appearance' }, btn('auto', 'Auto'), btn('light', 'Light'), btn('dark', 'Dark'));
+}
 
 // ---------- import ----------
 
@@ -48,6 +87,8 @@ function startImport(msg: WorkerIn): void {
       state.sport = 'all';
       state.hr = null;
       state.showAll = false;
+      state.view = 'stats';
+      animate = true;
       render();
     } else {
       worker?.terminate();
@@ -64,21 +105,27 @@ const importFiles = (inputs: RawInput[]) => {
   startImport({ type: 'import', inputs });
 };
 
+function hero(...children: (Node | null)[]): HTMLElement {
+  return h('main', { id: 'main', class: 'hero' },
+    h('div', { class: 'hero-top' },
+      h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Your Strava export, analysed privately in this browser tab.')),
+      themeToggle()),
+    ...children);
+}
+
 function renderImporting(phase: string, done: number, total: number): void {
-  app.replaceChildren(
-    h('main', {}, header(),
-      h('div', { class: 'drop', role: 'status', 'aria-live': 'polite' },
-        h('h2', {}, 'Reading your export…'),
-        h('p', {}, phase),
-        h('progress', { max: total, value: done, 'aria-label': 'Import progress' }))),
-  );
+  app.replaceChildren(hero(
+    h('div', { class: 'drop', role: 'status', 'aria-live': 'polite' },
+      h('h2', {}, 'Reading your export…'),
+      h('p', {}, phase),
+      h('progress', { max: total, value: done, 'aria-label': 'Import progress' }))));
 }
 
 function renderImport(error?: string): void {
-  const zipInput = h('input', { type: 'file', multiple: true, hidden: true, accept: '.zip,.csv,.gpx,.tcx,.fit,.gz', onchange: () => importFiles(fromFileList(zipInput.files ?? [])) });
-  const dirInput = h('input', { type: 'file', hidden: true, webkitdirectory: true, onchange: () => importFiles(fromFileList(dirInput.files ?? [])) });
-  const drop = h('div', { class: 'drop', tabindex: 0, role: 'group', 'aria-label': 'Drop your Strava export here' },
-    h('h2', {}, 'Drop your Strava export here'),
+  const zipInput = h('input', { type: 'file', multiple: true, hidden: true, 'aria-label': 'Choose ZIP or files', accept: '.zip,.csv,.gpx,.tcx,.fit,.gz', onchange: () => importFiles(fromFileList(zipInput.files ?? [])) });
+  const dirInput = h('input', { type: 'file', hidden: true, webkitdirectory: true, 'aria-label': 'Choose folder', onchange: () => importFiles(fromFileList(dirInput.files ?? [])) });
+  const drop = h('section', { class: 'drop', 'aria-labelledby': 'drop-title' },
+    h('h2', { id: 'drop-title' }, 'Drop your Strava export here'),
     h('p', {}, 'The ZIP file, the extracted folder, or loose files. Everything is processed in your browser; nothing is uploaded.'),
     error ? h('p', { class: 'warn', role: 'alert' }, error) : null,
     h('div', { class: 'row' },
@@ -93,19 +140,15 @@ function renderImport(error?: string): void {
     drop.classList.remove('over');
     if (e.dataTransfer) importFiles(await fromDrop(e.dataTransfer));
   });
-  app.replaceChildren(
-    h('main', {}, header(), drop,
-      h('h2', {}, 'How to get your Strava export'),
-      h('ol', {},
-        h('li', {}, 'On strava.com open Settings → My Account → “Download or Delete Your Account” → “Get Started”.'),
-        h('li', {}, 'Choose “Request Your Archive”. Strava emails you a download link (can take a while).'),
-        h('li', {}, 'Download the ZIP and drop it here. You do not need to unpack it.')),
-      h('p', {}, 'Ride Atlas is an independent project and is not affiliated with Strava.')),
-  );
-}
-
-function header(): HTMLElement {
-  return h('header', {}, h('h1', {}, 'Ride Atlas'), h('p', { class: 'sub' }, 'Your Strava export, analysed privately in this browser tab.'));
+  app.replaceChildren(hero(
+    drop,
+    h('h2', {}, 'How to get your Strava export'),
+    h('ol', { class: 'steps' },
+      h('li', {}, 'On strava.com open Settings → My Account → “Download or Delete Your Account” → “Get Started”.'),
+      h('li', {}, 'Choose “Request Your Archive”. Strava emails you a download link (this can take a while).'),
+      h('li', {}, 'Download the ZIP and drop it here. You do not need to unpack it.')),
+    h('p', {}, 'No account, no upload, no tracking: files are read by your browser and never leave this tab. Not sure yet? Try the demo data, which is entirely made up.'),
+    h('p', {}, 'Ride Atlas is an independent project and is not affiliated with Strava.')));
 }
 
 // ---------- formatting ----------
@@ -145,32 +188,53 @@ function render(): void {
       h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
         ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
 
-  const viewBtn = (v: State['view'], label: string) =>
-    h('button', { class: state.view === v ? 'primary' : '', 'aria-pressed': String(state.view === v), onclick: () => { state.view = v; render(); } }, label);
-  const toolbar = h('div', { class: 'toolbar row', role: 'toolbar', 'aria-label': 'Filters' },
-    h('div', { class: 'row seg', role: 'group', 'aria-label': 'View' }, viewBtn('stats', 'Stats'), viewBtn('posters', 'Posters')),
-    select('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
-    select('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
-    select('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
-    h('button', { onclick: () => { state.result = null; renderImport(); } }, 'Load another export'));
+  const setView = (v: State['view']) => { state.view = v; state.sheet = false; animate = true; render(); window.scrollTo(0, 0); };
+  const navBtn = (v: State['view'], label: string) => h('button', { 'aria-current': state.view === v ? 'page' : undefined, onclick: () => setView(v) }, label);
+  const sections: [string, string][] = [['overview', 'Overview'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
+  const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar' },
+    h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
+    h('nav', { class: 'nav', 'aria-label': 'Views' }, navBtn('stats', 'Stats'), navBtn('posters', 'Posters'),
+      ...(state.view === 'stats' && all.length ? sections.map(([id, t]) => h('a', { href: `#${id}` }, t)) : [])),
+    h('div', { class: 'filters', role: 'group', 'aria-label': 'Filters', id: 'filters' },
+      select('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
+      select('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
+      select('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
+      h('button', { class: 'sheet-close', onclick: () => { state.sheet = false; render(); } }, 'Done')),
+    h('div', { class: 'side-foot' }, themeToggle(),
+      h('button', { class: 'load', onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'Load another export')));
 
-  const main = h('main', {}, header(), toolbar);
+  const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Main tabs' },
+    h('button', { 'aria-current': state.view === 'stats' ? 'page' : undefined, onclick: () => setView('stats') }, 'Stats'),
+    h('button', { 'aria-current': state.view === 'posters' ? 'page' : undefined, onclick: () => setView('posters') }, 'Posters'),
+    h('button', { 'aria-expanded': String(state.sheet), 'aria-controls': 'filters', onclick: () => { state.sheet = !state.sheet; render(); } }, 'Filters'),
+    h('button', { onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'New'));
+
+  const main = h('main', { id: 'main', class: animate ? 'content enter' : 'content', tabindex: -1 });
+  animate = false;
+  const mount = () => {
+    labelScrollables(main);
+    app.replaceChildren(
+      h('a', { class: 'skip', href: '#main' }, 'Skip to content'),
+      h('div', { class: state.sheet ? 'layout sheet-open' : 'layout' }, sidebar, main),
+      tabbar);
+  };
 
   if (!all.length) {
-    main.append(h('p', { class: 'warn', role: 'alert' }, 'No activities could be read from this export.'), issuesSection(result));
-    app.replaceChildren(main);
+    main.append(h('div', { class: 'card empty' }, h('h2', {}, 'No activities found'),
+      h('p', { class: 'warn', role: 'alert' }, 'Nothing could be read from these files. Make sure you picked the whole Strava export (the ZIP, or the folder containing activities.csv).')), issuesSection(result));
+    mount();
     return;
   }
 
   if (state.view === 'posters') {
     main.append(posterSection(acts));
-    app.replaceChildren(main);
+    mount();
     return;
   }
 
   main.append(h('h2', { id: 'overview' }, 'Overview'));
   if (!acts.length) {
-    main.append(h('p', {}, 'No activities for this sport.'));
+    main.append(h('div', { class: 'card empty' }, h('h2', {}, 'Nothing here'), h('p', {}, 'There are no activities for this sport. Pick another sport in the filters.')));
   } else {
     const s = summarize(acts);
     main.append(statGrid(s, acts));
@@ -179,7 +243,7 @@ function render(): void {
       main.append(h('h2', {}, 'By sport'), h('div', { class: 'card' }, summaryTable('Sport', bySport(all).map((x): [string, Summary] => [x.sport, x.summary]))));
     }
     const yearRows = byPeriod(acts, 'year', state.tz);
-    main.append(h('h2', {}, 'By year'), h('div', { class: 'card' }, summaryTable('Year', yearRows.map((r): [string, Summary] => [r.key, r.summary]))));
+    main.append(h('h2', { id: 'periods' }, 'By year'), h('div', { class: 'card' }, summaryTable('Year', yearRows.map((r): [string, Summary] => [r.key, r.summary]))));
     main.append(h('h2', {}, 'By month'), h('div', { class: 'card scroll' }, summaryTable('Month', byPeriod(acts, 'month', state.tz).map((r): [string, Summary] => [r.key, r.summary]).reverse())));
     main.append(h('h2', {}, 'By weekday'), h('div', { class: 'card' }, summaryTable('Weekday', byWeekday(acts, state.tz).map((r): [string, Summary] => [r.label, r.summary]))));
     main.append(h('details', {}, h('summary', {}, 'By ISO week'), h('div', { class: 'card scroll' }, summaryTable('Week', byPeriod(acts, 'week', state.tz).map((r): [string, Summary] => [`${r.key} (${r.start})`, r.summary]).reverse()))));
@@ -189,7 +253,7 @@ function render(): void {
     main.append(exportSection(acts, hz, pz));
   }
   main.append(issuesSection(result));
-  app.replaceChildren(main);
+  mount();
 }
 
 function statGrid(s: Summary, acts: Activity[]): HTMLElement {
@@ -223,7 +287,7 @@ function recordsSection(acts: Activity[]): HTMLElement {
     ['Longest streak', r.longestStreak ? `${r.longestStreak.days} days` : dash, r.longestStreak ? `${r.longestStreak.start} → ${r.longestStreak.end}` : ''],
     ['Current streak (as of last activity)', r.currentStreak ? `${r.currentStreak.days} days` : dash, r.currentStreak ? `ending ${r.currentStreak.end}` : ''],
   ];
-  return h('div', {}, h('h2', {}, 'Records'), h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows.map((x) => x.map((c) => c ?? '')), { numFrom: 1 })));
+  return h('div', {}, h('h2', { id: 'records' }, 'Records'), h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows.map((x) => x.map((c) => c ?? '')), { numFrom: 1 })));
 }
 
 function summaryTable(label: string, rows: [string, Summary][]): HTMLElement {
@@ -238,12 +302,12 @@ function summaryTable(label: string, rows: [string, Summary][]): HTMLElement {
 
 function posterSection(acts: Activity[]): HTMLElement {
   const sec = h('div', {}, h('h2', { id: 'posters' }, 'Posters'));
-  if (!acts.length) return h('div', {}, sec, h('p', {}, 'No activities for this sport.'));
+  if (!acts.length) return h('div', {}, sec, h('div', { class: 'card empty' }, h('h2', {}, 'Nothing to draw'), h('p', {}, 'There are no activities for this sport. Pick another sport in the filters.')));
   const opts: PosterOptions = { ...poster, units: state.units, tz: state.tz, sportLabel: state.sport === 'all' ? 'All activities' : state.sport };
   const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
     h('label', {}, label, h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
       ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
-  const controls = h('div', { class: 'row card controls' },
+  const controls = h('div', { class: 'row card controls', role: 'group', 'aria-label': 'Poster settings' },
     pick('Poster', poster.type, POSTER_TYPES.map((t): [PosterType, string] => [t.id, t.name]), (v) => (poster.type = v)),
     pick('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v)),
     pick('Size', poster.size, SIZES.map((s): [string, string] => [s.id, s.name]), (v) => (poster.size = v)),
@@ -339,10 +403,18 @@ function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: 
 
 // ---------- loops ----------
 
+let clusterCache: { key: unknown; sport: string; value: ReturnType<typeof clusterRoutes> } | null = null;
+function cachedClusters(acts: Activity[]) {
+  if (!clusterCache || clusterCache.key !== state.result || clusterCache.sport !== state.sport) {
+    clusterCache = { key: state.result, sport: state.sport, value: clusterRoutes(acts) };
+  }
+  return clusterCache.value;
+}
+
 function loopsSection(acts: Activity[]): HTMLElement {
   const sec = h('div', {}, h('h2', { id: 'loops' }, 'Most ridden routes'),
     h('p', {}, 'A heuristic: GPS tracks of similar length that stay within about 80 m of each other on average are grouped, in either direction. Close calls can land on either side.'));
-  const clusters = clusterRoutes(acts).slice(0, 12);
+  const clusters = cachedClusters(acts).slice(0, 12);
   if (!clusters.length) { sec.append(h('p', {}, 'No repeated routes found (needs at least two GPS activities that follow the same path).')); return sec; }
   const u = state.units;
   sec.append(h('div', { class: 'loops' }, ...clusters.map((c) => h('div', { class: 'loop' }, routePreview(c.preview),

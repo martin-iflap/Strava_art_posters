@@ -26,3 +26,11 @@
 - Season overview covers one calendar year (picker); it already shows totals, so the optional stats strip is not drawn on it.
 - Sport filter, unit toggle and loop-detection UI already shipped in M1; they now also drive the posters.
 - Screenshot check also downloads each poster as PNG and SVG and verifies pixel dimensions.
+
+## M3
+- Layout: sidebar (views, section links, filters, theme toggle) + content on desktop; on ≤820 px the sidebar collapses to a top bar, with a bottom tab bar (Stats / Posters / Filters / New) and filters in a bottom sheet. Translucent blurred surfaces, 20 px radii, 150–220 ms transitions, all disabled under prefers-reduced-motion.
+- Theme: Auto (system) / Light / Dark, remembered in localStorage (wrapped in try/catch; the app works without it).
+- Accessibility: skip link, landmarks, aria-current/pressed/expanded, keyboard-focusable named scroll regions, visible focus rings. `axe-core` added as a devDependency (justification: automated WCAG A/AA check of the home, stats and posters screens inside `npm run check`; serious/critical violations fail the check).
+- Performance (npm run perf, ~2,660 activities / 92 MB): import ≈ 5.6 s in the worker, stats ≈ 10 ms, route clustering ≈ 0.4 s (main thread, cached per sport), heaviest poster (facets/overlay) ≈ 0.15–0.3 s. In the browser the worst main-thread stall during a big import was < 1 s, so clustering stays on the main thread.
+- GitHub Pages: `base: './'` (relative URLs) works under any sub-path; `npm run check` serves dist/ under `/ride-atlas/` and loads the demo to prove it. A Pages deploy workflow is included (runs on `main`).
+- README: user-facing section on top, the original spec kept below. Screenshots are NOT committed (git rules); the README explains how to generate them.

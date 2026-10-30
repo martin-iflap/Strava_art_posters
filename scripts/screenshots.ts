@@ -4,7 +4,10 @@
  * Usage: npm run build && npm run screenshots
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { zipSync } from 'fflate';
 import { chromium, type Browser, type Page } from 'playwright';
 import { generate } from '../src/demo/generate';
@@ -34,9 +37,39 @@ function watch(page: Page, label: string): void {
   page.on('requestfailed', (r) => problems.push(`[${label}] request failed: ${r.url()} ${r.failure()?.errorText}`));
 }
 
-async function shoot(page: Page, name: string): Promise<void> {
-  await page.screenshot({ path: `screenshots/${name}.png`, fullPage: true });
+async function shoot(page: Page, name: string, fullPage = true): Promise<void> {
+  await page.waitForTimeout(350); // let the 220 ms enter animation finish
+  await page.screenshot({ path: `screenshots/${name}.png`, fullPage });
   console.log('saved', name);
+}
+
+
+const require = createRequire(import.meta.url);
+const AXE = readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
+
+/** Run axe-core (injected via evaluate, so the page CSP is not involved) and record serious/critical violations. */
+async function a11y(page: Page, label: string): Promise<void> {
+  await page.evaluate(AXE);
+  const violations = await page.evaluate(async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = await (window as any).axe.run(document, { runOnly: ['wcag2a', 'wcag2aa', 'best-practice'] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return r.violations.filter((v: any) => v.impact === 'serious' || v.impact === 'critical').map((v: any) => `${v.id}: ${v.help} (${v.nodes.length} nodes, e.g. ${v.nodes[0].target})`);
+  });
+  for (const v of violations) problems.push(`[a11y ${label}] ${v}`);
+}
+
+/** Serve dist/ under a sub-path, like GitHub Pages project sites (https://user.github.io/repo/). */
+function servePages(prefix: string, port: number) {
+  const types: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png' };
+  return createServer((req, res) => {
+    const url = (req.url ?? '/').split('?')[0]!;
+    if (!url.startsWith(prefix)) { res.writeHead(404).end(); return; }
+    const rel = url.slice(prefix.length);
+    const file = join('dist', rel === '' || rel.endsWith('/') ? `${rel}index.html` : rel);
+    if (!existsSync(file) || statSync(file).isDirectory()) { res.writeHead(404).end(); return; }
+    res.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  }).listen(port);
 }
 
 async function main(): Promise<void> {
@@ -59,9 +92,19 @@ async function main(): Promise<void> {
         await page.goto(ORIGIN);
         await page.waitForSelector('#demo');
         await shoot(page, `home-${label}`);
+        if (scheme === 'light') await a11y(page, `home-${s.n}`);
         await page.click('#demo');
         await page.waitForSelector('#export', { timeout: 60_000 });
         await shoot(page, `stats-${label}`);
+        if (scheme === 'light') await a11y(page, `stats-${s.n}`);
+        if (s.n === 'mobile') {
+          await page.getByRole('button', { name: 'Filters' }).click();
+          await shoot(page, `filters-sheet-${label}`, false);
+          await page.getByRole('button', { name: 'Done' }).click();
+          await page.getByRole('button', { name: 'Posters' }).click();
+          await page.waitForSelector('#poster-preview');
+          await shoot(page, `posters-${label}`, false);
+        }
         if (label === 'desktop-light') {
           const checks = await page.evaluate(() => ({
             h2: Array.from(document.querySelectorAll('h2')).map((e) => e.textContent),
@@ -118,6 +161,11 @@ async function main(): Promise<void> {
       console.log('poster', name, `${w}x${h}`, `${Math.round(png.length / 1024)} KB`, `svg ${Math.round(svgText.length / 1024)} KB`);
     }
     await shoot(pp, 'posters-page');
+    await a11y(pp, 'posters');
+    await pp.getByRole('button', { name: 'Dark', exact: true }).click();
+    if ((await pp.evaluate(() => document.documentElement.dataset.theme)) !== 'dark') problems.push('theme toggle did not set dark');
+    await pp.getByRole('button', { name: 'Light', exact: true }).click();
+    if ((await pp.evaluate(() => document.documentElement.dataset.theme)) !== 'light') problems.push('theme toggle did not set light');
     await pctx.close();
 
     // Real upload path: a ZIP chosen through the file picker.
@@ -134,6 +182,45 @@ async function main(): Promise<void> {
     const report = await page.textContent('#issues + p');
     console.log('upload report:', report);
     if (!/3 skipped/.test(report ?? '')) problems.push(`unexpected import report: ${report}`);
+    // GitHub Pages style sub-path hosting: relative asset and worker URLs must still resolve.
+    const pages = servePages('/ride-atlas/', 4180);
+    const gctx = await browser.newContext({ viewport: { width: 1100, height: 800 } });
+    const gp = await gctx.newPage();
+    gp.on('console', (m) => { if (m.type() === 'error') problems.push(`[pages] console error: ${m.text()}`); });
+    gp.on('pageerror', (e) => problems.push(`[pages] page error: ${e.message}`));
+    await gp.goto('http://localhost:4180/ride-atlas/');
+    await gp.click('#demo');
+    await gp.waitForSelector('#export', { timeout: 60_000 });
+    await gctx.close();
+    pages.close();
+
+    // Large export through the real file input: UI must stay responsive and finish in reasonable time.
+    if (process.env.BIG !== '0') {
+      const big = generate({ seed: 11, density: 6.2, stepS: 20 });
+      const bz: Record<string, Uint8Array> = {};
+      for (const f of big.files) bz[f.path] = f.data;
+      writeFileSync('screenshots/_big.zip', zipSync(bz, { level: 0 }));
+      const bctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+      const bp = await bctx.newPage();
+      watch(bp, 'big');
+      await bp.goto(ORIGIN);
+      // Frame-gap monitor (a string, so esbuild helpers are not injected into the page).
+      await bp.evaluate(`(() => { window.__maxGap = 0; let last = performance.now(); const tick = () => { const n = performance.now(); window.__maxGap = Math.max(window.__maxGap, n - last); last = n; requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`);
+      const t0 = Date.now();
+      await bp.setInputFiles('input[type=file] >> nth=0', 'screenshots/_big.zip');
+      await bp.waitForSelector('#export', { timeout: 180_000 });
+      const importMs = Date.now() - t0;
+      const gap = await bp.evaluate(() => (window as unknown as { __maxGap: number }).__maxGap);
+      console.log(`big import: ${importMs} ms, worst main-thread stall ${Math.round(gap)} ms, ${await bp.locator('.stat b').first().textContent()} activities`);
+      if (gap > 1500) problems.push(`main thread stalled ${Math.round(gap)} ms during big import`);
+      await bp.getByRole('button', { name: 'Posters' }).click();
+      const t1 = Date.now();
+      await bp.waitForSelector('#poster-preview');
+      await bp.waitForFunction(() => (document.querySelector('#poster-preview') as HTMLImageElement).complete);
+      console.log(`big facets poster rendered in ${Date.now() - t1} ms`);
+      await shoot(bp, 'big-posters');
+      await bctx.close();
+    }
     await ctx.close();
     await browser.close();
   } finally {

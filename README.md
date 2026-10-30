@@ -1,4 +1,51 @@
-# Ride Atlas (working title)
+# Ride Atlas
+
+**Turn your Strava data export into detailed stats and poster-quality art, privately, in your browser.**
+
+Drop in the ZIP that Strava gives you and get totals by year/month/week/weekday and sport, records and streaks, time in heart-rate and power zones, your most-ridden routes, and five downloadable posters (route facets, all-routes glow overlay, calendar heatmap, elevation ridgelines, season overview) as PNG or SVG, plus CSV/JSON exports.
+
+## Privacy
+
+Everything happens inside your browser tab. There is no server, no account, no analytics, no fonts or map tiles from the internet. The page ships with a strict Content-Security-Policy (`connect-src 'none'`), and an automated check fails the build if the app makes any network request. Your files are never uploaded. Ride Atlas is an independent project and is not affiliated with Strava.
+
+## How to get your Strava export
+
+1. On strava.com open **Settings → My Account → Download or Delete Your Account → Get Started**.
+2. Choose **Request Your Archive**. Strava emails you a link (it can take a while).
+3. Download the ZIP. You do not need to unpack it; drop the ZIP (or the extracted folder) onto Ride Atlas.
+
+Don't have an export handy? Click **Try with demo data**. It is entirely made up.
+
+## Using it
+
+- **Stats**: overview, records, by sport/year/month/weekday/week, time in zones (set max or threshold heart rate and FTP), most-ridden routes (a heuristic, labelled as such), a sortable activity list and the import report (skipped/unreadable files with reasons).
+- **Posters**: pick a poster, theme (light, dark, ember, aurora) and size (A3 portrait, square, phone wallpaper), optionally add a stats strip, then download PNG or SVG.
+- Filters (sport, km/mi, local/UTC time zone) apply everywhere. Light/dark follows your system, with a manual toggle.
+- **Export**: activities, monthly, yearly, sports and zones as CSV, or everything as JSON.
+
+## Run it yourself
+
+```bash
+npm install
+npm run dev        # development server
+npm run build      # static site in dist/ (relative paths: works under any sub-path)
+npm test           # unit tests
+npm run check      # tests + build + browser checks (needs Chromium for Playwright)
+npm run perf       # timings on a ~2,700 activity synthetic export
+npm run fixtures   # write a fake export to fixtures/ (folder + ZIP)
+```
+
+### Publishing on GitHub Pages
+
+The build uses relative URLs, so it works from `https://<user>.github.io/<repo>/` with no configuration. `.github/workflows/pages.yml` builds and deploys `dist/` on every push to `main`; enable **Settings → Pages → Source: GitHub Actions**.
+
+### Screenshots
+
+Screenshots are not committed. `npm run check` (or `npm run screenshots` after `npm run build`) renders every screen and poster from demo data into `screenshots/`, in light and dark and at desktop and phone widths.
+
+---
+
+# Project spec (source of truth for development)
 
 A static, client-only web app. The user drops in their Strava data export and gets (1) detailed stats and (2) shareable, poster-quality visualizations, all downloadable. Nothing ever leaves the browser.
 

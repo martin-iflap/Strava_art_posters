@@ -9,10 +9,12 @@
     "test": "vitest run",
     "fixtures": "tsx scripts/generate-fixtures.ts",
     "screenshots": "tsx scripts/screenshots.ts",
+    "perf": "tsx scripts/perf.ts",
     "check": "npm test && npm run build && npm run screenshots"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "axe-core": "^4.14.0",
     "playwright": "^1.64.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
