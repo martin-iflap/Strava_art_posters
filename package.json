@@ -10,6 +10,7 @@
     "fixtures": "tsx scripts/generate-fixtures.ts",
     "screenshots": "tsx scripts/screenshots.ts",
     "perf": "tsx scripts/perf.ts",
+    "examples": "tsx scripts/examples.ts",
     "check": "npm test && npm run build && npm run screenshots"
   },
   "devDependencies": {

@@ -22,7 +22,7 @@ Don't have an export handy? Click **Try with demo data**. It is entirely made up
 
 - **Stats**: overview, records, by sport/year/month/weekday/week, time in zones (set max or threshold heart rate and FTP), most-ridden routes (a heuristic, labelled as such), a sortable activity list and the import report (skipped/unreadable files with reasons).
 - **Single activity**: select any activity name (in the Activities table or in Records) for its own page: route map, elevation, speed, heart-rate and power charts, zones, per-km/mile splits, how it ranks among your other activities of that sport and how it compares with repeats of the same route. Older/Newer buttons step through your activities; the browser's Back button works.
-- **Posters**: every poster is shown in a gallery. Pick a theme (light, dark, ember, aurora) and size (A3 portrait, square, phone wallpaper) for all of them, optionally add a stats strip, tune each poster on its card, and download it as PNG or SVG, or all of them at once as a ZIP. Select a poster to view it full screen and flip through them with the arrow keys, the on-screen arrows or a swipe.
+- **Posters**: every poster is shown in a gallery. Pick a theme (light, dark, ember, aurora) and size (A3 portrait, square, phone wallpaper) for all of them, optionally add a stats strip, tune each poster on its card, and download it as PNG or SVG, or all of them at once as a ZIP. Select a poster to view it full screen and flip through them with the arrow keys, the on-screen arrows or a swipe; its options can be changed there too. Browser Back and Forward move between Stats, Posters and activities.
 - Filters (sport, km/mi, local/UTC time zone) apply everywhere. Light/dark follows your system, with a manual toggle.
 - **Export**: activities, monthly, yearly, sports and zones as CSV, or everything as JSON.
 
@@ -36,6 +36,7 @@ npm test           # unit tests
 npm run check      # tests + build + browser checks (needs Chromium for Playwright)
 npm run perf       # timings on a ~2,700 activity synthetic export
 npm run fixtures   # write a fake export to fixtures/ (folder + ZIP)
+npm run examples   # re-render the example posters on the import page (public/examples/)
 ```
 
 ### Publishing on GitHub Pages

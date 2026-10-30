@@ -14,6 +14,7 @@ import { distance, distanceUnit, elevation, elevationUnit, formatDuration, forma
 import { parts, ymd } from './util/time';
 import { DEFAULT_POSTER, POSTER_TYPES, SIZES, THEMES, renderPoster, type PosterOptions, type PosterType } from './posters';
 import { svgToPng } from './posters/raster';
+import { EXAMPLE_POSTERS } from './examples';
 import { strToU8, zipSync } from 'fflate';
 import type { WorkerIn, WorkerOut } from './worker';
 
@@ -27,8 +28,6 @@ interface State {
   showAll: boolean;
   view: 'stats' | 'posters' | 'activity';
   activityId: string | null;
-  returnView: 'stats' | 'posters';
-  returnScroll: number;
   query: string;
   sortKey: 'date' | 'distance' | 'time' | 'elevation' | 'speed';
   theme: 'auto' | 'light' | 'dark';
@@ -39,7 +38,7 @@ interface State {
   mapTiles: string | null;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, returnView: 'stats', returnScroll: 0, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, mapTiles: null };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, mapTiles: null };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 const app = document.getElementById('app')!;
@@ -109,6 +108,7 @@ function startImport(msg: WorkerIn): void {
       state.monthYear = null;
       state.showAll = false;
       state.view = 'stats';
+      history.replaceState({ view: 'stats' } satisfies NavEntry, '', location.pathname + location.search);
       animate = true;
       render();
     } else {
@@ -162,22 +162,49 @@ function renderImport(error?: string): void {
     drop.classList.remove('over');
     if (e.dataTransfer) importFiles(await fromDrop(e.dataTransfer));
   });
+  const feature = (title: string, text: string) => h('li', {}, h('b', {}, title), h('span', {}, text));
   app.replaceChildren(hero(
     drop,
+    h('h2', {}, 'What you get'),
+    h('ul', { class: 'features' },
+      feature(`${POSTER_TYPES.length} printable posters`, 'Every route you rode, the metres you climbed, your years as rings, how far around the world you went. Download them as PNG (A3 print size) or SVG.'),
+      feature('Your stats, all of them', 'Totals by year, month, weekday and sport, records and streaks, time in heart-rate and power zones, and your most repeated routes.'),
+      feature('Every activity in detail', 'Map, elevation, speed, heart rate and power charts with a shared hover readout, and splits per kilometre.')),
+    h('div', { class: 'examples', 'aria-label': 'Example posters made from the demo data' },
+      ...EXAMPLE_POSTERS.map((ex) => h('figure', {},
+        h('img', { class: 'poster', src: `examples/${ex.type}.svg`, alt: `Example: ${POSTER_TYPES.find((t) => t.id === ex.type)!.name} poster`, loading: 'lazy', width: 3508, height: 4961 }),
+        h('figcaption', {}, ex.caption)))),
+    h('h2', {}, 'How it works'),
+    h('ol', { class: 'steps' },
+      h('li', {}, 'You give it your Strava export (or GPX, TCX and FIT files from any app or device).'),
+      h('li', {}, 'Your browser reads the files in a background worker in this tab. Nothing is uploaded: there is no server, no account and no tracking.'),
+      h('li', {}, 'Stats and posters are worked out on your device. Closing the tab forgets everything.')),
+    h('p', {}, 'The one optional exception is the map background: when you switch it on, map pictures (never your activities) are loaded from OpenStreetMap volunteers’ servers.'),
     h('h2', {}, 'How to get your Strava export'),
     h('ol', { class: 'steps' },
       h('li', {}, 'On strava.com open Settings → My Account → “Download or Delete Your Account” → “Get Started”.'),
       h('li', {}, 'Choose “Request Your Archive”. Strava emails you a download link (this can take a while).'),
       h('li', {}, 'Download the ZIP and drop it here. You do not need to unpack it.')),
-    h('p', {}, 'No account, no upload, no tracking: files are read by your browser and never leave this tab. Not sure yet? Try the demo data, which is entirely made up.'),
-    h('p', {}, 'Ride Atlas is an independent project and is not affiliated with Strava.')));
+    h('p', {}, 'Not sure yet? Try the demo data: one made-up rider, several years of invented rides, runs and walks.'),
+    h('aside', { class: 'card sibling' }, h('b', {}, 'Forgot to record a ride?'), ' ', gpxToFitLink('Make a realistic activity file for it with GPX to FIT'), ', a sister app that also runs in your browser.'),
+    h('p', { class: 'muted small' }, 'Ride Atlas is an independent project and is not affiliated with Strava.')));
 }
+
+/** Link to the owner's sister app (generates realistic activity files for rides that were not recorded). */
+const gpxToFitLink = (text: string) => h('a', { href: 'https://gpx-to-fit.pages.dev', target: '_blank', rel: 'noopener noreferrer' }, text);
 
 // ---------- formatting ----------
 
 const dist = (m: number) => fmt(distance(m, state.units));
 const elev = (m: number) => fmt(elevation(m, state.units), 0);
 const dateOf = (ms: number) => ymd(parts(ms, state.tz));
+
+/** A labelled select. `on` updates the state, then `after` runs (by default the page is re-rendered). */
+function selectControl<T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void, o: { ariaLabel?: string; after?: (el: HTMLSelectElement) => void } = {}): HTMLElement {
+  return h('label', {}, label,
+    h('select', { 'aria-label': o.ariaLabel, onchange: (e) => { const el = e.target as HTMLSelectElement; on(el.value as T); (o.after ?? render)(el); } },
+      ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
+}
 
 // ---------- results ----------
 
@@ -217,12 +244,7 @@ function renderNow(): void {
   const hz = currentHrZones(all);
   const pz = state.ftp ? powerZones(state.ftp) : null;
 
-  const select = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
-    h('label', {}, label,
-      h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
-        ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
 
-  const setView = (v: 'stats' | 'posters') => { state.view = v; state.sheet = false; animate = true; render(); window.scrollTo(0, 0); };
   const navBtn = (v: 'stats' | 'posters', label: string, badge?: string) => h('button', { 'aria-current': (state.view === v || (v === 'stats' && state.view === 'activity')) ? 'page' : undefined, onclick: () => setView(v) }, label, badge ? h('span', { class: 'badge', 'aria-label': `${badge} posters` }, badge) : null);
   const sections: [string, string][] = [['overview', 'Overview'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
   const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar' },
@@ -230,13 +252,14 @@ function renderNow(): void {
     h('nav', { class: 'nav', 'aria-label': 'Views' }, navBtn('stats', 'Stats'), navBtn('posters', 'Posters', String(POSTER_TYPES.length)),
       ...(state.view === 'stats' && all.length ? sections.map(([id, t]) => h('a', { href: `#${id}` }, t)) : [])),
     h('div', { class: 'filters', role: 'group', 'aria-label': 'Filters', id: 'filters' },
-      select('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
-      select('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
-      select('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
-      select('Map background', state.mapTiles ?? 'off', [['off', 'Off (fully offline)'], ...TILE_SOURCES.map((t): [string, string] => [t.id, t.name])], (v) => setMapTiles(v === 'off' ? null : v)),
+      selectControl('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
+      selectControl('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
+      selectControl('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
+      selectControl('Map background', state.mapTiles ?? 'off', [['off', 'Off (fully offline)'], ...TILE_SOURCES.map((t): [string, string] => [t.id, t.name])], (v) => setMapTiles(v === 'off' ? null : v)),
       state.mapTiles ? h('p', { class: 'hint' }, 'Map images come from OpenStreetMap volunteers’ servers, which see the map areas you view. Your files still stay here.') : null,
       h('button', { class: 'sheet-close', onclick: () => { state.sheet = false; render(); } }, 'Done')),
     h('div', { class: 'side-foot' }, themeToggle(),
+      h('p', { class: 'sibling small' }, 'Forgot to record one? ', gpxToFitLink('GPX to FIT'), ' makes a realistic file.'),
       h('button', { class: 'load', onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'Load another export')));
 
   const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Main tabs' },
@@ -268,7 +291,7 @@ function renderNow(): void {
       main.append(activityView(a, {
         units: state.units, tz: state.tz, hz, pz, all,
         list: [...(acts.some((x) => x.id === a.id) ? acts : all)].sort((x, y) => y.startMs - x.startMs),
-        open: openActivity, back: () => closeActivity(), clusters: (sport) => clustersFor(all, sport),
+        open: openActivity, back: closeActivity, clusters: (sport) => clustersFor(all, sport),
         tiles: tileSource(state.mapTiles), enableTiles: () => { setMapTiles(TILE_SOURCES[0]!.id); render(); },
       }));
       mount();
@@ -407,6 +430,7 @@ function posterFor(type: PosterType, acts: Activity[]): Rendered {
   return r;
 }
 
+const themeControl = (after?: (el: HTMLSelectElement) => void) => selectControl('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v), { ariaLabel: 'Poster theme', after });
 const posterName = (t: PosterType) => POSTER_TYPES.find((x) => x.id === t)!.name;
 const posterFile = (acts: Activity[], t: PosterType, ext: string) => exportFilename(acts, state.sport, `poster-${t}`, ext, state.tz);
 
@@ -421,10 +445,9 @@ async function downloadPng(acts: Activity[], t: PosterType, status: HTMLElement)
 }
 
 /** Per-poster settings, shown on the poster's card. */
-function posterSettings(t: PosterType, acts: Activity[]): HTMLElement[] {
+function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLSelectElement) => void): HTMLElement[] {
   const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
-    h('label', {}, label, h('select', { 'aria-label': `${posterName(t)}: ${label}`, onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
-      ...options.map(([v, x]) => h('option', { value: v, selected: v === value }, x))));
+    selectControl(label, value, options, on, { ariaLabel: `${posterName(t)}: ${label}`, after });
   const o = posterOpts(acts);
   const years = yearsOf(acts).map((y): [string, string] => [String(y), String(y)]);
   switch (t) {
@@ -462,9 +485,6 @@ function posterPromo(acts: Activity[], open: () => void): HTMLElement {
 function posterSection(acts: Activity[]): HTMLElement {
   const sec = h('div', {}, h('h2', { id: 'posters' }, 'Posters'));
   if (!acts.length) return h('div', {}, sec, h('div', { class: 'card empty' }, h('h2', {}, 'Nothing to draw'), h('p', {}, 'There are no activities for this sport. Pick another sport in the filters.')));
-  const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
-    h('label', {}, label, h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
-      ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
   const allStatus = h('span', { class: 'muted', role: 'status' });
   const zipAll = async (kind: 'png' | 'svg', btn: HTMLButtonElement) => {
     btn.disabled = true;
@@ -484,8 +504,8 @@ function posterSection(acts: Activity[]): HTMLElement {
   const pngAll: HTMLButtonElement = h('button', { id: 'dl-all-png', class: 'primary', onclick: () => zipAll('png', pngAll) }, 'Download all (PNG)');
   const svgAll: HTMLButtonElement = h('button', { id: 'dl-all-svg', onclick: () => zipAll('svg', svgAll) }, 'All as SVG');
   const controls = h('div', { class: 'row card controls', role: 'group', 'aria-label': 'Poster settings' },
-    pick('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v)),
-    pick('Size', poster.size, SIZES.map((s): [string, string] => [s.id, s.name]), (v) => (poster.size = v)),
+    themeControl(),
+    selectControl('Size', poster.size, SIZES.map((s): [string, string] => [s.id, s.name]), (v) => (poster.size = v)),
     h('label', {}, h('input', { type: 'checkbox', checked: poster.strip, onchange: (e) => { poster.strip = (e.target as HTMLInputElement).checked; render(); } }), 'Stats strip'),
     h('div', { class: 'row grow-end' }, pngAll, svgAll));
 
@@ -496,7 +516,7 @@ function posterSection(acts: Activity[]): HTMLElement {
     imgs.push([t.id, img]);
     const status = h('span', { class: 'muted small', role: 'status' });
     return h('article', { class: 'pcard', 'aria-label': t.name },
-      h('button', { class: 'thumb', 'aria-label': `View ${t.name} full screen`, onclick: (e) => openLightbox(acts, i, e.currentTarget as HTMLElement) }, img),
+      h('button', { class: 'thumb', 'aria-label': `View ${t.name} full screen`, onclick: () => openLightbox(acts, i) }, img),
       h('div', { class: 'pcard-body' },
         h('h3', {}, t.name),
         h('div', { class: 'row controls' }, ...posterSettings(t.id, acts)),
@@ -521,12 +541,20 @@ function posterSection(acts: Activity[]): HTMLElement {
 
 // ---------- full-screen poster viewer ----------
 
-function openLightbox(acts: Activity[], start: number, opener: HTMLElement): void {
+function openLightbox(acts: Activity[], start: number): void {
   let i = start;
   const img = h('img', { class: 'lb-img', alt: '' });
   const title = h('h2', { id: 'lb-title' });
   const counter = h('span', { class: 'lb-count', 'aria-live': 'polite' });
   const status = h('span', { class: 'muted small', role: 'status' });
+  const settings = h('div', { class: 'row lb-settings', role: 'group', 'aria-label': 'Poster options' });
+  /** A setting changed: redraw the poster here and the gallery behind, and keep focus on the control. */
+  const changed = (el: HTMLSelectElement) => {
+    const label = el.getAttribute('aria-label');
+    render();
+    show(i);
+    if (label) settings.querySelector<HTMLElement>(`select[aria-label="${CSS.escape(label)}"]`)?.focus();
+  };
   const show = (k: number) => {
     i = (k + POSTER_TYPES.length) % POSTER_TYPES.length;
     const t = POSTER_TYPES[i]!;
@@ -536,16 +564,26 @@ function openLightbox(acts: Activity[], start: number, opener: HTMLElement): voi
     title.textContent = t.name;
     counter.textContent = `${i + 1} / ${POSTER_TYPES.length}`;
     status.textContent = '';
+    settings.replaceChildren(...posterSettings(t.id, acts, changed), themeControl(changed));
   };
   // The viewer is a history entry, so the browser's Back button (or a phone's back gesture) closes it.
-  const teardown = () => { document.removeEventListener('keydown', onKey); window.removeEventListener('popstate', teardown); box.remove(); document.body.classList.remove('lb-open'); opener.focus({ preventScroll: true }); };
-  const close = () => { if ((history.state as { lightbox?: boolean } | null)?.lightbox) history.back(); else teardown(); };
+  const teardown = () => {
+    document.removeEventListener('keydown', onKey);
+    window.removeEventListener('popstate', teardown);
+    box.remove();
+    document.body.classList.remove('lb-open');
+    // Back on the gallery at the poster last shown (the gallery may have been re-rendered meanwhile).
+    document.getElementById(`poster-${POSTER_TYPES[i]!.id}`)?.closest('button')?.focus();
+  };
+  const close = () => { if (navEntry().lightbox) history.back(); else teardown(); };
   const onKey = (e: KeyboardEvent) => {
+    const inSelect = (e.target as Element | null)?.tagName === 'SELECT'; // arrows there change the option
     if (e.key === 'Escape') close();
+    else if (inSelect) return;
     else if (e.key === 'ArrowLeft') show(i - 1);
     else if (e.key === 'ArrowRight') show(i + 1);
     else if (e.key === 'Tab') { // keep focus inside the viewer
-      const f = Array.from(box.querySelectorAll('button')) as HTMLElement[];
+      const f = Array.from(box.querySelectorAll<HTMLElement>('button, select'));
       const first = f[0]!, last = f[f.length - 1]!;
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
@@ -565,7 +603,7 @@ function openLightbox(acts: Activity[], start: number, opener: HTMLElement): voi
     x0 = null;
   });
   const box = h('div', { class: 'lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'lb-title', onclick: (e) => { if (e.target === box || e.target === stage) close(); } },
-    h('div', { class: 'lb-bar' }, h('div', {}, title, counter),
+    h('div', { class: 'lb-bar' }, h('div', {}, title, counter), settings,
       h('div', { class: 'row' },
         h('button', { id: 'lb-png', class: 'primary', onclick: () => downloadPng(acts, POSTER_TYPES[i]!.id, status) }, 'PNG'),
         h('button', { onclick: () => { const t = POSTER_TYPES[i]!.id; download(posterFile(acts, t, 'svg'), posterFor(t, acts).svg, 'image/svg+xml'); } }, 'SVG'),
@@ -575,7 +613,7 @@ function openLightbox(acts: Activity[], start: number, opener: HTMLElement): voi
   document.body.append(box);
   document.body.classList.add('lb-open');
   document.addEventListener('keydown', onKey);
-  history.pushState({ lightbox: true }, '');
+  history.pushState({ ...navEntry(), lightbox: true } satisfies NavEntry, '');
   window.addEventListener('popstate', teardown);
   closeBtn.focus();
 }
@@ -710,43 +748,61 @@ function activitiesSection(acts: Activity[], hz: Zone[] | null): HTMLElement {
   return h('div', {}, h('h2', { id: 'activities' }, 'Activities'), h('div', { class: 'row card controls' }, search, sort), status, holder, h('p', {}, moreBtn));
 }
 
-// ---------- single activity ----------
+// ---------- history ----------
 
-function openActivity(id: string): void {
-  if (state.view !== 'activity') {
-    state.returnView = state.view === 'posters' ? 'posters' : 'stats';
-    state.returnScroll = window.scrollY;
-  }
-  state.activityId = id;
-  state.view = 'activity';
-  state.sheet = false;
-  animate = true;
-  const depth = ((history.state as { depth?: number } | null)?.depth ?? 0) + 1; // activity entries stacked on the stats page
-  history.pushState({ activity: id, depth }, '', '#activity');
-  render();
-  window.scrollTo(0, 0);
+type View = State['view'];
+/**
+ * What a browser history entry shows. Every view change pushes an entry, so Back and Forward move between
+ * Stats, Posters and activities; the poster viewer pushes one too, so Back closes it. `depth` counts stacked
+ * activity entries (opening the next activity from an activity), `scroll` is where the page was when left.
+ */
+interface NavEntry { view: View; activity?: string; depth?: number; lightbox?: true; scroll?: number }
+/** In-page anchors (#records …) create entries without state: those belong to the stats page. */
+const navEntry = (): NavEntry => (history.state as NavEntry | null) ?? { view: 'stats' };
+
+/** Remember the scroll position in the current entry, then add a new one on top. */
+function pushNav(entry: NavEntry, hash: string): void {
+  history.replaceState({ ...navEntry(), scroll: window.scrollY }, '');
+  history.pushState(entry, '', hash);
 }
 
-function closeActivity(fromHistory = false): void {
-  if (state.view !== 'activity') return;
-  const depth = (history.state as { depth?: number } | null)?.depth ?? 0;
-  if (!fromHistory && depth > 0) { history.go(-depth); return; } // popstate handler finishes the job
-  state.view = state.returnView;
+/** Show what an entry describes. */
+function showEntry(entry: NavEntry): void {
+  state.view = entry.view === 'activity' && !entry.activity ? 'stats' : entry.view;
+  if (entry.activity) state.activityId = entry.activity;
+  state.sheet = false;
   animate = true;
   render();
-  window.scrollTo(0, state.returnScroll);
+  window.scrollTo(0, entry.scroll ?? 0);
+}
+
+function setView(v: 'stats' | 'posters'): void {
+  if (state.view === v) { state.sheet = false; render(); window.scrollTo(0, 0); return; }
+  const entry: NavEntry = { view: v };
+  pushNav(entry, `#${v}`);
+  showEntry(entry);
+}
+
+function openActivity(id: string): void {
+  const cur = navEntry();
+  const entry: NavEntry = { view: 'activity', activity: id, depth: cur.view === 'activity' ? (cur.depth ?? 1) + 1 : 1 };
+  pushNav(entry, '#activity');
+  showEntry(entry);
+}
+
+/** Leave the activity view for the page it was opened from (going back past stacked activities). */
+function closeActivity(): void {
+  const depth = navEntry().depth ?? 0;
+  if (depth > 0) history.go(-depth); // the popstate handler shows the page
+  else showEntry({ view: 'stats' });
 }
 
 window.addEventListener('popstate', (e) => {
-  const id = (e.state as { activity?: string } | null)?.activity;
-  if (id && state.result) {
-    if (state.view !== 'activity') { state.returnView = state.view === 'posters' ? 'posters' : 'stats'; state.returnScroll = window.scrollY; }
-    state.activityId = id;
-    state.view = 'activity';
-    animate = true;
-    render();
-    window.scrollTo(0, 0);
-  } else if (state.view === 'activity') closeActivity(true);
+  if (!state.result) return;
+  const entry = (e.state as NavEntry | null) ?? { view: 'stats' };
+  // Same page as now (the poster viewer closed, or an in-page anchor): nothing to re-render.
+  if (entry.view === state.view && (entry.view !== 'activity' || entry.activity === state.activityId)) return;
+  showEntry(entry);
 });
 
 // ---------- export / issues ----------

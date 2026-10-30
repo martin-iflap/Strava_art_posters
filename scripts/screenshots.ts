@@ -109,6 +109,9 @@ async function main(): Promise<void> {
         watch(page, label);
         await page.goto(ORIGIN);
         await page.waitForSelector('#demo');
+        // Example posters on the import page are static files that must load.
+        await page.evaluate(() => Promise.all(Array.from(document.querySelectorAll<HTMLImageElement>('.examples img')).map((i) => { i.loading = 'eager'; return i.decode(); })))
+          .catch(() => problems.push(`${label}: an example poster on the import page did not load`));
         await shoot(page, `home-${label}`);
         if (scheme === 'light') await a11y(page, `home-${s.n}`);
         await page.click('#demo');
@@ -277,10 +280,39 @@ async function main(): Promise<void> {
     await pp.waitForTimeout(150);
     if (await pp.locator('.lightbox').count()) problems.push('lightbox: Back did not close');
     if (!(await pp.locator('.gallery').count())) problems.push('lightbox: Back left the posters page');
-    // Climb poster: all years overlaid
-    await pp.getByLabel('Mountains climbed: Period').selectOption('overlay');
-    await pp.waitForFunction(() => { const i = document.querySelector('#poster-climb') as HTMLImageElement | null; return !!i?.src && i.complete; });
     if (!(await pp.evaluate(() => document.activeElement?.classList.contains('thumb')))) problems.push('lightbox: focus not returned');
+    // Poster options can be changed inside the viewer; the poster there and in the gallery follow.
+    const climbAt = await pp.locator('.pcard').evaluateAll((els) => els.findIndex((e) => e.querySelector('#poster-climb')));
+    await pp.locator('.thumb').nth(climbAt).click();
+    await pp.waitForSelector('.lightbox');
+    const before = await pp.getAttribute('.lb-img', 'src');
+    await pp.locator('.lb-settings').getByLabel('Mountains climbed: Period').selectOption('overlay');
+    if ((await pp.getAttribute('.lb-img', 'src')) === before) problems.push('lightbox: changing an option did not redraw the poster');
+    if (!(await pp.evaluate(() => document.activeElement?.closest('.lb-settings')))) problems.push('lightbox: focus lost after changing an option');
+    await shoot(pp, 'lightbox-options', false);
+    await pp.keyboard.press('Escape');
+    await pp.waitForTimeout(100);
+    if ((await pp.locator('.gallery').getByLabel('Mountains climbed: Period').inputValue()) !== 'overlay') problems.push('lightbox: gallery did not pick up the option changed in the viewer');
+    await pp.waitForFunction(() => { const i = document.querySelector('#poster-climb') as HTMLImageElement | null; return !!i?.src && i.complete; });
+    // Regression: after visiting an activity, closing the viewer must stay on the gallery (it used to reopen the activity).
+    await pp.getByRole('button', { name: 'Stats', exact: true }).first().click();
+    await pp.locator('.link.name').first().click();
+    await pp.waitForSelector('#activity-title');
+    await pp.locator('.nav').getByRole('button', { name: /^Posters/ }).click();
+    await pp.waitForSelector('.gallery');
+    await pp.locator('.thumb').nth(1).click();
+    await pp.waitForSelector('.lightbox');
+    await pp.keyboard.press('Escape');
+    await pp.waitForTimeout(150);
+    if (!(await pp.locator('.gallery').count()) || (await pp.locator('#activity-title').count())) problems.push('lightbox: closing it after visiting an activity left the posters page');
+    // Back walks the views in order: posters → activity → stats.
+    await pp.goBack();
+    await pp.waitForSelector('#activity-title').catch(() => problems.push('history: Back from posters did not return to the activity'));
+    await pp.goBack();
+    await pp.waitForSelector('#records').catch(() => problems.push('history: Back from the activity did not return to stats'));
+    await pp.goForward();
+    await pp.goForward();
+    await pp.waitForSelector('.gallery').catch(() => problems.push('history: Forward did not return to posters'));
     await shoot(pp, 'posters-page');
     await a11y(pp, 'posters');
     await pp.getByRole('button', { name: 'Dark', exact: true }).click();
