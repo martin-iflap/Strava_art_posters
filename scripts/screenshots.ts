@@ -102,8 +102,12 @@ async function main(): Promise<void> {
           await shoot(page, `filters-sheet-${label}`, false);
           await page.getByRole('button', { name: 'Done' }).click();
           await page.getByRole('button', { name: 'Posters' }).click();
-          await page.waitForSelector('#poster-preview');
+          await page.waitForSelector('#poster-climb[src]');
           await shoot(page, `posters-${label}`, false);
+          await page.click('.thumb >> nth=0');
+          await page.waitForSelector('.lightbox');
+          await shoot(page, `lightbox-${label}`, false);
+          await page.keyboard.press('Escape');
         }
         if (label === 'desktop-light') {
           // single-activity view: open from the table, check content, history back, search keeps focus
@@ -158,13 +162,14 @@ async function main(): Promise<void> {
       }
     }
 
-    // Posters: render every type from demo data, download PNG + SVG, verify dimensions.
+    // Posters: every type is shown in the gallery; download PNG + SVG from its card and verify dimensions.
     const plan: [string, string, string, string][] = [
-      ['Route facets', 'dark', 'a3', 'facets'], ['All routes', 'ember', 'a3', 'overlay'], ['Calendar heatmap', 'light', 'a3', 'calendar'],
-      ['Elevation ridgelines', 'aurora', 'a3', 'ridgelines'], ['Season overview', 'dark', 'a3', 'season'],
-      ['Route facets', 'light', 'phone', 'facets-phone'], ['All routes', 'dark', 'square', 'overlay-square'],
-      ['Activity bubbles', 'dark', 'a3', 'circles'], ['Time-of-day ridges', 'ember', 'a3', 'timeofday'], ['Weekly rhythm', 'light', 'square', 'punchcard'],
-      ['Year rings', 'aurora', 'square', 'rings'], ['Year over year', 'dark', 'a3', 'cumulative'],
+      ['facets', 'dark', 'a3', 'facets'], ['overlay', 'ember', 'a3', 'overlay'], ['calendar', 'light', 'a3', 'calendar'],
+      ['ridgelines', 'aurora', 'a3', 'ridgelines'], ['season', 'dark', 'a3', 'season'],
+      ['facets', 'light', 'phone', 'facets-phone'], ['overlay', 'dark', 'square', 'overlay-square'],
+      ['circles', 'dark', 'a3', 'circles'], ['timeofday', 'ember', 'a3', 'timeofday'], ['punchcard', 'light', 'square', 'punchcard'],
+      ['rings', 'aurora', 'square', 'rings'], ['cumulative', 'dark', 'a3', 'cumulative'],
+      ['climb', 'dark', 'a3', 'climb'], ['climb', 'light', 'square', 'climb-square'],
     ];
     const pctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
     const pp = await pctx.newPage();
@@ -173,25 +178,46 @@ async function main(): Promise<void> {
     await pp.click('#demo');
     await pp.waitForSelector('#export', { timeout: 60_000 });
     await pp.getByRole('button', { name: 'Posters' }).click();
+    const cards = await pp.locator('.pcard').count();
+    if (cards < 11) problems.push(`gallery shows ${cards} posters, expected all of them`);
     for (const [type, theme, size, name] of plan) {
-      await pp.locator('.controls select').nth(0).selectOption({ label: type });
-      await pp.locator('.controls select').nth(1).selectOption(theme);
-      await pp.locator('.controls select').nth(2).selectOption(size);
-      await pp.waitForSelector('#poster-preview');
-      await pp.waitForFunction(() => (document.querySelector('#poster-preview') as HTMLImageElement).complete);
-      const [dl] = await Promise.all([pp.waitForEvent('download', { timeout: 60_000 }), pp.click('#dl-png')]);
+      await pp.locator('.controls select').nth(0).selectOption(theme);
+      await pp.locator('.controls select').nth(1).selectOption(size);
+      await pp.waitForFunction((t) => { const i = document.querySelector(`#poster-${t}`) as HTMLImageElement | null; return !!i?.src && i.complete; }, type);
+      const [dl] = await Promise.all([pp.waitForEvent('download', { timeout: 60_000 }), pp.click(`#dl-png-${type}`)]);
       const file = `screenshots/poster-${name}.png`;
       await dl.saveAs(file);
       const png = readFileSync(file);
       const w = png.readUInt32BE(16), h = png.readUInt32BE(20);
       const want = size === 'a3' ? [3508, 4961] : size === 'square' ? [3000, 3000] : [1290, 2796];
       if (w !== want[0] || h !== want[1]) problems.push(`poster ${name}: PNG is ${w}x${h}, expected ${want.join('x')}`);
-      const [sv] = await Promise.all([pp.waitForEvent('download'), pp.click('#dl-svg')]);
+      const [sv] = await Promise.all([pp.waitForEvent('download'), pp.click(`#dl-svg-${type}`)]);
       await sv.saveAs(`screenshots/poster-${name}.svg`);
       const svgText = readFileSync(`screenshots/poster-${name}.svg`, 'utf8');
       if (!svgText.startsWith('<svg') || /NaN|undefined/.test(svgText)) problems.push(`poster ${name}: bad SVG output`);
       console.log('poster', name, `${w}x${h}`, `${Math.round(png.length / 1024)} KB`, `svg ${Math.round(svgText.length / 1024)} KB`);
     }
+    // Download all as one ZIP of SVGs.
+    const [zdl] = await Promise.all([pp.waitForEvent('download', { timeout: 120_000 }), pp.click('#dl-all-svg')]);
+    await zdl.saveAs('screenshots/_all-svg.zip');
+    const { unzipSync } = await import('fflate');
+    const names = Object.keys(unzipSync(readFileSync('screenshots/_all-svg.zip')));
+    if (names.length !== cards) problems.push(`download all: ${names.length} files in ZIP, expected ${cards}`);
+    // Full-screen viewer: arrows move between posters, Escape closes and returns focus.
+    await pp.locator('.thumb').nth(0).click();
+    await pp.waitForSelector('.lightbox');
+    await shoot(pp, 'lightbox-desktop', false);
+    await a11y(pp, 'lightbox');
+    await pp.keyboard.press('ArrowRight');
+    if (!(await pp.textContent('.lb-count'))?.startsWith('2 /')) problems.push('lightbox: ArrowRight did not advance');
+    await pp.keyboard.press('ArrowLeft');
+    await pp.keyboard.press('ArrowLeft');
+    if (!(await pp.textContent('.lb-count'))?.startsWith(`${cards} /`)) problems.push('lightbox: ArrowLeft did not wrap around');
+    await pp.click('.lb-next');
+    if (!(await pp.textContent('.lb-count'))?.startsWith('1 /')) problems.push('lightbox: next button did not advance');
+    await pp.keyboard.press('Escape');
+    if (await pp.locator('.lightbox').count()) problems.push('lightbox: Escape did not close');
+    if (!(await pp.evaluate(() => document.activeElement?.classList.contains('thumb')))) problems.push('lightbox: focus not returned');
     await shoot(pp, 'posters-page');
     await a11y(pp, 'posters');
     await pp.getByRole('button', { name: 'Dark', exact: true }).click();
@@ -247,9 +273,8 @@ async function main(): Promise<void> {
       if (gap > 1500) problems.push(`main thread stalled ${Math.round(gap)} ms during big import`);
       await bp.getByRole('button', { name: 'Posters' }).click();
       const t1 = Date.now();
-      await bp.waitForSelector('#poster-preview');
-      await bp.waitForFunction(() => (document.querySelector('#poster-preview') as HTMLImageElement).complete);
-      console.log(`big facets poster rendered in ${Date.now() - t1} ms`);
+      await bp.waitForFunction(() => Array.from(document.querySelectorAll('.pcard img')).every((i) => (i as HTMLImageElement).src && (i as HTMLImageElement).complete), undefined, { timeout: 60_000 });
+      console.log(`big: all posters rendered in ${Date.now() - t1} ms`);
       await shoot(bp, 'big-posters');
       await bctx.close();
     }

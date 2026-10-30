@@ -1,7 +1,8 @@
 import type { Activity } from '../types';
 import { byPeriod } from '../stats/summary';
-import { distance, distanceUnit } from '../util/units';
+import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { dayNumber, fromDayNumber, parts, weekStart } from '../util/time';
+import { climb } from './climb';
 import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
 import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type PosterOptions, type PosterType } from './common';
 
@@ -248,6 +249,13 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       const sel = recent();
       const f = makeFrame(sel, o, 'Year over year', `${rangeLabel(sel, o.tz)} · cumulative ${metric}`, o.strip);
       return cumulative(sel, o, f);
+    }
+    case 'climb': {
+      const year = o.climbYear === 'all' ? null : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();
+      const sel = year === null ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const gain = sel.reduce((s, a) => s + a.elevGainM, 0);
+      const f = makeFrame(sel, o, 'Mountains climbed', `${year ?? rangeLabel(sel, o.tz)} · ${int(elevation(gain, o.units))} ${elevationUnit(o.units)} of climbing, activity after activity`, o.strip);
+      return climb(sel, o, f, year);
     }
   }
 }

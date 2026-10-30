@@ -66,3 +66,38 @@ describe('posters', () => {
     expect(esc('<&>')).toBe('&lt;&amp;&gt;');
   });
 });
+
+describe('mountains climbed poster', () => {
+  it('chains activities: each starts where the previous ended, ending at total distance and gain', async () => {
+    const { climbSeries } = await import('../src/posters/climb');
+    const a = [
+      act({ startMs: utc(2024, 3, 1), distanceM: 20_000, elevGainM: 300 }),
+      act({ startMs: utc(2024, 1, 1), distanceM: 10_000, elevGainM: 100, profile: [100, 150, 120, 170] }),
+    ];
+    const { pts, starts } = climbSeries(a);
+    expect(pts[0]).toEqual([0, 0]);
+    expect(pts[pts.length - 1]).toEqual([30_000, 400]);
+    expect(starts.map((s) => s.d)).toEqual([0, 10_000]); // sorted by date
+    for (let i = 1; i < pts.length; i++) {
+      expect(pts[i]![0]).toBeGreaterThanOrEqual(pts[i - 1]![0]);
+      expect(pts[i]![1]).toBeGreaterThanOrEqual(pts[i - 1]![1] - 1e-9);
+    }
+    // the first activity's gain follows its profile: no rise on the downhill middle third
+    const mid = pts.filter(([d]) => d > 10_000 / 3 + 1 && d < (2 * 10_000) / 3 - 1).map(([, e]) => e);
+    expect(Math.max(...mid) - Math.min(...mid)).toBeLessThan(1e-6);
+  });
+  it('counts mountains and states them on the poster', async () => {
+    const { mountainCounts } = await import('../src/posters/climb');
+    const c = mountainCounts(8849 * 2);
+    expect(c.map((x) => x.mountain.name)).toEqual(['Everest', 'Mont Blanc', 'Olympus']);
+    expect(c[0]!.count).toBe(2);
+    expect(c[2]!.count).toBeCloseTo(17698 / 2918);
+    const a = [act({ startMs: utc(2024, 5, 1), distanceM: 50_000, elevGainM: 8849 * 2 }), act({ startMs: utc(2023, 5, 1), elevGainM: 99 })];
+    const p = renderPoster('climb', a, opts({ climbYear: 2024 }));
+    expect(p.svg).toContain('>2<tspan');
+    expect(p.svg).toContain('Everests');
+    expect(p.svg).toContain('17,698 m');
+    expect(renderPoster('climb', a, opts({ climbYear: 'all' })).svg).toContain('17,797 m');
+    expect(renderPoster('climb', a, opts({ climbYear: null })).svg).toContain('2024 ·'); // latest year by default
+  });
+});

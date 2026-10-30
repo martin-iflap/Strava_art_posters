@@ -12,8 +12,9 @@ import { activityZones, hrZones, observedMaxHr, powerZones, zoneTotals, zonesBy,
 import type { Activity, ImportResult, Tz, Units } from './types';
 import { distance, distanceUnit, elevation, elevationUnit, formatDuration, formatHours, speed, speedUnit } from './util/units';
 import { parts, ymd } from './util/time';
-import { DEFAULT_POSTER, POSTER_TYPES, SIZES, THEMES, latestYear, renderPoster, type PosterOptions, type PosterType } from './posters';
+import { DEFAULT_POSTER, POSTER_TYPES, SIZES, THEMES, renderPoster, type PosterOptions, type PosterType } from './posters';
 import { svgToPng } from './posters/raster';
+import { strToU8, zipSync } from 'fflate';
 import type { WorkerIn, WorkerOut } from './worker';
 
 interface State {
@@ -32,12 +33,13 @@ interface State {
   sortKey: 'date' | 'distance' | 'time' | 'elevation' | 'speed';
   theme: 'auto' | 'light' | 'dark';
   sheet: boolean;
+  /** year shown in the month tables; null = latest year with data */
+  monthYear: number | 'all' | null;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, returnView: 'stats', returnScroll: 0, query: '', sortKey: 'date', theme: 'auto', sheet: false };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, returnView: 'stats', returnScroll: 0, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
-let previewUrl: string | null = null;
 const app = document.getElementById('app')!;
 const ZONE_COLORS = ['#8e8e93', '#30b0c7', '#34c759', '#ff9f0a', '#ff453a', '#bf5af2', '#ff2d55'];
 
@@ -94,6 +96,7 @@ function startImport(msg: WorkerIn): void {
       state.result = m.result;
       state.sport = 'all';
       state.hr = null;
+      state.monthYear = null;
       state.showAll = false;
       state.view = 'stats';
       animate = true;
@@ -279,7 +282,9 @@ function renderNow(): void {
     }
     const yearRows = byPeriod(acts, 'year', state.tz);
     main.append(h('h2', { id: 'periods' }, 'By year'), h('div', { class: 'card' }, summaryTable('Year', yearRows.map((r): [string, Summary] => [r.key, r.summary]))));
-    main.append(h('h2', {}, 'By month'), h('div', { class: 'card scroll' }, summaryTable('Month', byPeriod(acts, 'month', state.tz).map((r): [string, Summary] => [r.key, r.summary]).reverse())));
+    const months = monthRows(byPeriod(acts, 'month', state.tz), acts);
+    main.append(h('div', { class: 'h2row' }, h('h2', {}, 'By month'), yearTabs(acts, 'Year shown in the month table')),
+      h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, summaryTable('Month', months.map((r): [string, Summary] => [r.label, r.summary]))));
     main.append(h('h2', {}, 'By weekday'), h('div', { class: 'card' }, summaryTable('Weekday', byWeekday(acts, state.tz).map((r): [string, Summary] => [r.label, r.summary]))));
     main.append(h('details', {}, h('summary', {}, 'By ISO week'), h('div', { class: 'card scroll' }, summaryTable('Week', byPeriod(acts, 'week', state.tz).map((r): [string, Summary] => [`${r.key} (${r.start})`, r.summary]).reverse()))));
     main.append(zonesSection(all, acts, hz, pz));
@@ -289,6 +294,28 @@ function renderNow(): void {
   }
   main.append(issuesSection(result));
   mount();
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** The year the month tables show: the chosen one if it has data, else the latest. */
+function monthYear(acts: Activity[]): number | 'all' {
+  const years = yearsOf(acts);
+  return state.monthYear === 'all' ? 'all' : state.monthYear !== null && years.includes(state.monthYear) ? state.monthYear : years[0] ?? 'all';
+}
+
+/** Month rows (keys "YYYY-MM") for the selected year, Jan to Dec; or every month, newest first. */
+function monthRows<T extends { key: string }>(rows: T[], acts: Activity[]): (T & { label: string })[] {
+  const y = monthYear(acts);
+  if (y === 'all') return rows.map((r) => ({ ...r, label: r.key })).reverse();
+  return rows.filter((r) => r.key.startsWith(`${y}-`)).map((r) => ({ ...r, label: MONTH_NAMES[Number(r.key.slice(5)) - 1]! }));
+}
+
+/** Segmented year picker for the month tables (shared by all of them). */
+function yearTabs(acts: Activity[], label: string): HTMLElement {
+  const cur = monthYear(acts);
+  const btn = (v: number | 'all', text: string) => h('button', { 'aria-pressed': String(cur === v), onclick: () => { state.monthYear = v; render(); } }, text);
+  return h('div', { class: 'seg years', role: 'group', 'aria-label': label }, ...[...yearsOf(acts)].reverse().map((y) => btn(y, String(y))), btn('all', 'All'));
 }
 
 function statGrid(s: Summary, acts: Activity[]): HTMLElement {
@@ -335,50 +362,185 @@ function summaryTable(label: string, rows: [string, Summary][]): HTMLElement {
 
 // ---------- posters ----------
 
+interface Rendered { svg: string; width: number; height: number; url: string }
+/** Rendered posters keyed by type; an entry is reused while its settings key is unchanged. */
+const posterCache = new Map<PosterType, { key: string; r: Rendered }>();
+let posterOwner: unknown = null;
+let posterJob = 0;
+
+function posterOpts(acts: Activity[]): PosterOptions {
+  const o: PosterOptions = { ...poster, units: state.units, tz: state.tz, sportLabel: state.sport === 'all' ? 'All activities' : state.sport };
+  const years = yearsOf(acts);
+  if (!o.seasonYear || !years.includes(o.seasonYear)) o.seasonYear = years[0] ?? null;
+  if (o.climbYear !== 'all' && (!o.climbYear || !years.includes(o.climbYear))) o.climbYear = years[0] ?? null;
+  return o;
+}
+const yearsOf = (acts: Activity[]) => [...new Set(acts.map((a) => parts(a.startMs, state.tz).y))].sort((a, b) => b - a);
+
+/** Render (or reuse) one poster for the current data and settings. */
+function posterFor(type: PosterType, acts: Activity[]): Rendered {
+  if (posterOwner !== state.result) { for (const v of posterCache.values()) URL.revokeObjectURL(v.r.url); posterCache.clear(); posterOwner = state.result; }
+  const o = posterOpts(acts);
+  const key = JSON.stringify([state.sport, o]);
+  const hit = posterCache.get(type);
+  if (hit && hit.key === key) return hit.r;
+  if (hit) URL.revokeObjectURL(hit.r.url);
+  const p = renderPoster(type, acts, o);
+  const r = { ...p, url: URL.createObjectURL(new Blob([p.svg], { type: 'image/svg+xml' })) };
+  posterCache.set(type, { key, r });
+  return r;
+}
+
+const posterName = (t: PosterType) => POSTER_TYPES.find((x) => x.id === t)!.name;
+const posterFile = (acts: Activity[], t: PosterType, ext: string) => exportFilename(acts, state.sport, `poster-${t}`, ext, state.tz);
+
+async function downloadPng(acts: Activity[], t: PosterType, status: HTMLElement): Promise<void> {
+  status.textContent = 'Rendering PNG…';
+  try {
+    const r = posterFor(t, acts);
+    const png = await svgToPng(r.svg, r.width, r.height);
+    download(posterFile(acts, t, 'png'), png.blob, 'image/png');
+    status.textContent = `${png.width} × ${png.height} px`;
+  } catch (e) { status.textContent = e instanceof Error ? e.message : String(e); }
+}
+
+/** Per-poster settings, shown on the poster's card. */
+function posterSettings(t: PosterType, acts: Activity[]): HTMLElement[] {
+  const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
+    h('label', {}, label, h('select', { 'aria-label': `${posterName(t)}: ${label}`, onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
+      ...options.map(([v, x]) => h('option', { value: v, selected: v === value }, x))));
+  const o = posterOpts(acts);
+  const years = yearsOf(acts).map((y): [string, string] => [String(y), String(y)]);
+  switch (t) {
+    case 'facets': return [pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v))];
+    case 'calendar': case 'rings': case 'cumulative': return [pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v))];
+    case 'circles': return [pick('Colour by', poster.circleColor, [['year', 'Year'], ['sport', 'Sport']], (v) => (poster.circleColor = v))];
+    case 'timeofday': return [pick('Rows', poster.todRows, [['year', 'Years'], ['month', 'Months'], ['weekday', 'Weekdays']], (v) => (poster.todRows = v))];
+    case 'punchcard': return [pick('Dot size', poster.punchMetric, [['count', 'Activities'], ['distance', 'Distance']], (v) => (poster.punchMetric = v))];
+    case 'ridgelines': return [
+      pick('Activities', poster.ridgeSelect, [['recent', 'Most recent'], ['longest', 'Longest'], ['climbiest', 'Biggest climbs']], (v) => (poster.ridgeSelect = v)),
+      pick('Count', String(poster.ridgeCount), ['15', '30', '45', '60'].map((c): [string, string] => [c, c]), (v) => (poster.ridgeCount = Number(v)))];
+    case 'season': return [pick('Year', String(o.seasonYear), years, (v) => (poster.seasonYear = Number(v)))];
+    case 'climb': return [pick('Period', String(o.climbYear), [...years, ['all', 'All time']], (v) => (poster.climbYear = v === 'all' ? 'all' : Number(v)))];
+    default: return [];
+  }
+}
+
 function posterSection(acts: Activity[]): HTMLElement {
   const sec = h('div', {}, h('h2', { id: 'posters' }, 'Posters'));
   if (!acts.length) return h('div', {}, sec, h('div', { class: 'card empty' }, h('h2', {}, 'Nothing to draw'), h('p', {}, 'There are no activities for this sport. Pick another sport in the filters.')));
-  const opts: PosterOptions = { ...poster, units: state.units, tz: state.tz, sportLabel: state.sport === 'all' ? 'All activities' : state.sport };
   const pick = <T extends string>(label: string, value: T, options: [T, string][], on: (v: T) => void) =>
     h('label', {}, label, h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
       ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
+  const allStatus = h('span', { class: 'muted', role: 'status' });
+  const zipAll = async (kind: 'png' | 'svg', btn: HTMLButtonElement) => {
+    btn.disabled = true;
+    const entries: Record<string, Uint8Array> = {};
+    try {
+      for (const [i, t] of POSTER_TYPES.entries()) {
+        allStatus.textContent = `Rendering ${i + 1} of ${POSTER_TYPES.length}: ${t.name}…`;
+        await new Promise((ok) => setTimeout(ok, 0)); // let the status paint
+        const r = posterFor(t.id, acts);
+        entries[posterFile(acts, t.id, kind)] = kind === 'svg' ? strToU8(r.svg) : new Uint8Array(await (await svgToPng(r.svg, r.width, r.height)).blob.arrayBuffer());
+      }
+      download(exportFilename(acts, state.sport, `posters-${kind}`, 'zip', state.tz), new Blob([zipSync(entries, { level: 0 })], { type: 'application/zip' }), 'application/zip');
+      allStatus.textContent = `${POSTER_TYPES.length} posters saved.`;
+    } catch (e) { allStatus.textContent = e instanceof Error ? e.message : String(e); }
+    btn.disabled = false;
+  };
+  const pngAll: HTMLButtonElement = h('button', { id: 'dl-all-png', class: 'primary', onclick: () => zipAll('png', pngAll) }, 'Download all (PNG)');
+  const svgAll: HTMLButtonElement = h('button', { id: 'dl-all-svg', onclick: () => zipAll('svg', svgAll) }, 'All as SVG');
   const controls = h('div', { class: 'row card controls', role: 'group', 'aria-label': 'Poster settings' },
-    pick('Poster', poster.type, POSTER_TYPES.map((t): [PosterType, string] => [t.id, t.name]), (v) => (poster.type = v)),
     pick('Theme', poster.theme, THEMES.map((t): [string, string] => [t.id, t.name]), (v) => (poster.theme = v)),
     pick('Size', poster.size, SIZES.map((s): [string, string] => [s.id, s.name]), (v) => (poster.size = v)),
-    h('label', {}, h('input', { type: 'checkbox', checked: poster.strip, onchange: (e) => { poster.strip = (e.target as HTMLInputElement).checked; render(); } }), 'Stats strip'));
-  if (poster.type === 'facets') controls.append(pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v)));
-  if (poster.type === 'calendar' || poster.type === 'rings' || poster.type === 'cumulative') controls.append(pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v)));
-  if (poster.type === 'circles') controls.append(pick('Colour by', poster.circleColor, [['year', 'Year'], ['sport', 'Sport']], (v) => (poster.circleColor = v)));
-  if (poster.type === 'timeofday') controls.append(pick('Rows', poster.todRows, [['year', 'Years'], ['month', 'Months'], ['weekday', 'Weekdays']], (v) => (poster.todRows = v)));
-  if (poster.type === 'punchcard') controls.append(pick('Dot size', poster.punchMetric, [['count', 'Activities'], ['distance', 'Distance']], (v) => (poster.punchMetric = v)));
-  if (poster.type === 'ridgelines') {
-    controls.append(
-      pick('Activities', poster.ridgeSelect, [['recent', 'Most recent'], ['longest', 'Longest'], ['climbiest', 'Biggest climbs']], (v) => (poster.ridgeSelect = v)),
-      pick('Count', String(poster.ridgeCount), ['15', '30', '45', '60'].map((c): [string, string] => [c, c]), (v) => (poster.ridgeCount = Number(v))));
-  }
-  if (poster.type === 'season') {
-    const years = [...new Set(acts.map((a) => parts(a.startMs, state.tz).y))].sort((a, b) => b - a);
-    const cur = poster.seasonYear && years.includes(poster.seasonYear) ? poster.seasonYear : latestYear(acts, state.tz)!;
-    opts.seasonYear = cur;
-    controls.append(pick('Year', String(cur), years.map((y): [string, string] => [String(y), String(y)]), (v) => (poster.seasonYear = Number(v))));
-  }
-  const result = renderPoster(poster.type, acts, opts);
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = URL.createObjectURL(new Blob([result.svg], { type: 'image/svg+xml' }));
-  const name = POSTER_TYPES.find((t) => t.id === poster.type)!.name;
-  const file = (ext: string) => exportFilename(acts, state.sport, `poster-${poster.type}`, ext, state.tz);
-  const status = h('span', { class: 'muted', role: 'status' });
-  const dl = h('div', { class: 'row' },
-    h('button', { id: 'dl-png', class: 'primary', onclick: async () => {
-      status.textContent = 'Rendering PNG…';
-      try { const png = await svgToPng(result.svg, result.width, result.height); download(file('png'), png.blob, 'image/png'); status.textContent = `${png.width} × ${png.height} px`; }
-      catch (e) { status.textContent = e instanceof Error ? e.message : String(e); }
-    } }, 'Download PNG'),
-    h('button', { id: 'dl-svg', onclick: () => download(file('svg'), result.svg, 'image/svg+xml') }, 'Download SVG'),
-    status);
-  const img = h('img', { id: 'poster-preview', class: 'poster', src: previewUrl, alt: `${name} poster preview`, width: result.width, height: result.height });
-  return h('div', {}, sec, controls, h('div', { class: 'poster-wrap' }, img), dl);
+    h('label', {}, h('input', { type: 'checkbox', checked: poster.strip, onchange: (e) => { poster.strip = (e.target as HTMLInputElement).checked; render(); } }), 'Stats strip'),
+    h('div', { class: 'row grow-end' }, pngAll, svgAll));
+
+  const size = SIZES.find((s) => s.id === poster.size) ?? SIZES[0]!;
+  const imgs: [PosterType, HTMLImageElement][] = [];
+  const cards = POSTER_TYPES.map((t, i) => {
+    const img = h('img', { class: 'poster', id: `poster-${t.id}`, alt: `${t.name} poster`, width: size.px[0], height: size.px[1] });
+    imgs.push([t.id, img]);
+    const status = h('span', { class: 'muted small', role: 'status' });
+    return h('article', { class: 'pcard', 'aria-label': t.name },
+      h('button', { class: 'thumb', 'aria-label': `View ${t.name} full screen`, onclick: (e) => openLightbox(acts, i, e.currentTarget as HTMLElement) }, img),
+      h('div', { class: 'pcard-body' },
+        h('h3', {}, t.name),
+        h('div', { class: 'row controls' }, ...posterSettings(t.id, acts)),
+        h('div', { class: 'row' },
+          h('button', { id: `dl-png-${t.id}`, class: 'primary', onclick: () => downloadPng(acts, t.id, status) }, 'PNG'),
+          h('button', { id: `dl-svg-${t.id}`, onclick: () => { const r = posterFor(t.id, acts); download(posterFile(acts, t.id, 'svg'), r.svg, 'image/svg+xml'); } }, 'SVG'),
+          status)));
+  });
+  // Render one poster per task so a big export never freezes the page; cached posters appear at once.
+  const job = ++posterJob;
+  const next = (k: number) => {
+    if (job !== posterJob || k >= imgs.length) return;
+    const [t, img] = imgs[k]!;
+    img.src = posterFor(t, acts).url;
+    setTimeout(() => next(k + 1), 0);
+  };
+  setTimeout(() => next(0), 0);
+  return h('div', {}, sec,
+    h('p', {}, 'Every poster from your data. Select one to view it full screen and flip through them with the arrow keys. Theme and size apply to all of them.'),
+    controls, allStatus, h('div', { class: 'gallery' }, ...cards));
+}
+
+// ---------- full-screen poster viewer ----------
+
+function openLightbox(acts: Activity[], start: number, opener: HTMLElement): void {
+  let i = start;
+  const img = h('img', { class: 'lb-img', alt: '' });
+  const title = h('h2', { id: 'lb-title' });
+  const counter = h('span', { class: 'lb-count', 'aria-live': 'polite' });
+  const status = h('span', { class: 'muted small', role: 'status' });
+  const show = (k: number) => {
+    i = (k + POSTER_TYPES.length) % POSTER_TYPES.length;
+    const t = POSTER_TYPES[i]!;
+    const r = posterFor(t.id, acts);
+    img.src = r.url;
+    img.alt = `${t.name} poster`;
+    title.textContent = t.name;
+    counter.textContent = `${i + 1} / ${POSTER_TYPES.length}`;
+    status.textContent = '';
+  };
+  const close = () => { document.removeEventListener('keydown', onKey); box.remove(); document.body.classList.remove('lb-open'); opener.focus({ preventScroll: true }); };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') show(i - 1);
+    else if (e.key === 'ArrowRight') show(i + 1);
+    else if (e.key === 'Tab') { // keep focus inside the viewer
+      const f = Array.from(box.querySelectorAll('button')) as HTMLElement[];
+      const first = f[0]!, last = f[f.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  };
+  const closeBtn = h('button', { class: 'lb-close', 'aria-label': 'Close', onclick: close }, '✕');
+  const stage = h('div', { class: 'lb-stage' },
+    h('button', { class: 'lb-nav lb-prev', 'aria-label': 'Previous poster', onclick: () => show(i - 1) }, '‹'),
+    img,
+    h('button', { class: 'lb-nav lb-next', 'aria-label': 'Next poster', onclick: () => show(i + 1) }, '›'));
+  // Swipe left/right on touch screens.
+  let x0: number | null = null;
+  stage.addEventListener('touchstart', (e) => { x0 = e.touches[0]?.clientX ?? null; }, { passive: true });
+  stage.addEventListener('touchend', (e) => {
+    const x1 = e.changedTouches[0]?.clientX;
+    if (x0 !== null && x1 !== undefined && Math.abs(x1 - x0) > 50) show(x1 < x0 ? i + 1 : i - 1);
+    x0 = null;
+  });
+  const box = h('div', { class: 'lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'lb-title', onclick: (e) => { if (e.target === box || e.target === stage) close(); } },
+    h('div', { class: 'lb-bar' }, h('div', {}, title, counter),
+      h('div', { class: 'row' },
+        h('button', { id: 'lb-png', class: 'primary', onclick: () => downloadPng(acts, POSTER_TYPES[i]!.id, status) }, 'PNG'),
+        h('button', { onclick: () => { const t = POSTER_TYPES[i]!.id; download(posterFile(acts, t, 'svg'), posterFor(t, acts).svg, 'image/svg+xml'); } }, 'SVG'),
+        status, closeBtn)),
+    stage);
+  show(start);
+  document.body.append(box);
+  document.body.classList.add('lb-open');
+  document.addEventListener('keydown', onKey);
+  closeBtn.focus();
 }
 
 // ---------- zones ----------
@@ -433,7 +595,9 @@ function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: 
     sec.append(h('div', { class: 'card' }, h('p', {}, zones.map((z) => `${z.name}: ${z.lower}${z.upper === null ? '+' : '–' + (z.upper - 1)}`).join('  ·  ')),
       zoneTable('Scope', zones, [{ ...total, key: 'All time' }], noun)));
     sec.append(h('div', { class: 'card' }, zoneTable('Year', zones, zonesBy(acts, stream, zones, 'year', state.tz), noun)));
-    sec.append(h('details', {}, h('summary', {}, 'By month'), h('div', { class: 'card scroll' }, zoneTable('Month', zones, zonesBy(acts, stream, zones, 'month', state.tz).reverse(), noun))));
+    const months = monthRows(zonesBy(acts, stream, zones, 'month', state.tz), acts).map((r) => ({ ...r, key: r.label }));
+    sec.append(h('details', {}, h('summary', {}, 'By month'), h('div', { class: 'row' }, yearTabs(acts, `Year shown in the ${noun} month table`)),
+      h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, zoneTable('Month', zones, months, noun))));
   };
   block('hr', hz, 'heart-rate', 'No heart-rate data found in this export.');
   block('power', pz, 'power', 'Enter your FTP above to see power zones (only activities with a power stream are counted).');
