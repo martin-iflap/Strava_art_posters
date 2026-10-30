@@ -1,6 +1,6 @@
 import './style.css';
 import { append, download, h, table } from './dom';
-import { routeSvg } from './charts';
+import { TILE_SOURCES, attribution, routeMap, tileSource } from './map';
 import { activityView } from './detail';
 import { dash, fmt, opt, plural } from './format';
 import { fromDrop, fromFileList } from './input';
@@ -35,9 +35,11 @@ interface State {
   sheet: boolean;
   /** year shown in the month tables; null = latest year with data */
   monthYear: number | 'all' | null;
+  /** map background tile source id; null = off (no requests leave the browser) */
+  mapTiles: string | null;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, returnView: 'stats', returnScroll: 0, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, returnView: 'stats', returnScroll: 0, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, mapTiles: null };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 const app = document.getElementById('app')!;
@@ -67,6 +69,14 @@ try {
   if (saved === 'light' || saved === 'dark') state.theme = saved;
 } catch { /* storage unavailable: stay on auto */ }
 applyTheme();
+try {
+  const m = localStorage.getItem('ride-atlas-map');
+  if (tileSource(m)) state.mapTiles = m;
+} catch { /* storage unavailable: maps stay off */ }
+const setMapTiles = (id: string | null) => {
+  state.mapTiles = tileSource(id) ? id : null;
+  try { if (state.mapTiles) localStorage.setItem('ride-atlas-map', state.mapTiles); else localStorage.removeItem('ride-atlas-map'); } catch { /* ignore */ }
+};
 
 function themeToggle(): HTMLElement {
   const btn = (t: State['theme'], label: string) =>
@@ -223,6 +233,8 @@ function renderNow(): void {
       select('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
       select('Units', state.units, [['metric', 'km / m'], ['imperial', 'mi / ft']], (v) => (state.units = v)),
       select('Time zone', state.tz, [['local', 'Local'], ['UTC', 'UTC']], (v) => (state.tz = v)),
+      select('Map background', state.mapTiles ?? 'off', [['off', 'Off (fully offline)'], ...TILE_SOURCES.map((t): [string, string] => [t.id, t.name])], (v) => setMapTiles(v === 'off' ? null : v)),
+      state.mapTiles ? h('p', { class: 'hint' }, 'Map images come from OpenStreetMap volunteers’ servers, which see the map areas you view. Your files still stay here.') : null,
       h('button', { class: 'sheet-close', onclick: () => { state.sheet = false; render(); } }, 'Done')),
     h('div', { class: 'side-foot' }, themeToggle(),
       h('button', { class: 'load', onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'Load another export')));
@@ -257,6 +269,7 @@ function renderNow(): void {
         units: state.units, tz: state.tz, hz, pz, all,
         list: [...(acts.some((x) => x.id === a.id) ? acts : all)].sort((x, y) => y.startMs - x.startMs),
         open: openActivity, back: () => closeActivity(), clusters: (sport) => clustersFor(all, sport),
+        tiles: tileSource(state.mapTiles), enableTiles: () => { setMapTiles(TILE_SOURCES[0]!.id); render(); },
       }));
       mount();
       return;
@@ -572,7 +585,7 @@ function openLightbox(acts: Activity[], start: number, opener: HTMLElement): voi
 function zoneBar(seconds: number[]): HTMLElement {
   const total = seconds.reduce((a, b) => a + b, 0) || 1;
   return h('div', { class: 'zbar', role: 'img', 'aria-label': 'Zone distribution' }, ...seconds.map((s, i) => {
-    const el = h('i', {});
+    const el = h('i', { title: `Zone ${i + 1}: ${fmt(s / 60, 0)} min (${fmt((s / total) * 100, 0)} %)` });
     el.style.width = `${(s / total) * 100}%`;
     el.style.background = ZONE_COLORS[i % ZONE_COLORS.length]!;
     return el;
@@ -646,12 +659,14 @@ function loopsSection(acts: Activity[]): HTMLElement {
   const clusters = clustersFor(state.result!.activities, state.sport).slice(0, 12);
   if (!clusters.length) { sec.append(h('p', {}, 'No repeated routes found (needs at least two GPS activities that follow the same path).')); return sec; }
   const u = state.units;
-  sec.append(h('div', { class: 'loops' }, ...clusters.map((c) => h('div', { class: 'loop' }, routeSvg(c.preview),
+  sec.append(h('div', { class: 'loops' }, ...clusters.map((c) => h('div', { class: 'loop' }, routeMap(c.preview, { tiles: tileSource(state.mapTiles), size: 192, label: `Route done ${c.count} times` }),
     h('dl', {},
       h('dt', {}, 'Times done'), h('dd', {}, String(c.count)),
       h('dt', {}, 'Distance'), h('dd', {}, `${dist(c.avgDistanceM)} ${distanceUnit(u)}`),
       h('dt', {}, 'Avg time'), h('dd', {}, formatDuration(c.avgMovingS)),
       h('dt', {}, 'Best time'), h('dd', {}, formatDuration(c.bestMovingS)))))));
+  const tiles = tileSource(state.mapTiles);
+  if (tiles) sec.append(attribution(tiles));
   return sec;
 }
 

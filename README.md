@@ -6,7 +6,9 @@ Drop in the ZIP that Strava gives you and get totals by year/month/week/weekday 
 
 ## Privacy
 
-Everything happens inside your browser tab. There is no server, no account, no analytics, no fonts or map tiles from the internet. The page ships with a strict Content-Security-Policy (`connect-src 'none'`), and an automated check fails the build if the app makes any network request. Your files are never uploaded. Ride Atlas is an independent project and is not affiliated with Strava.
+Everything happens inside your browser tab. There is no server, no account, no analytics, no fonts from the internet. Your files are never uploaded. The page ships with a strict Content-Security-Policy (`connect-src 'none'`), and an automated check fails the build if the app makes any other network request.
+
+The one optional exception is the **map background** on activity and route maps. It is off by default. When you turn it on (Filters → Map background, or "Show map background" on an activity), map images are loaded from [OpenTopoMap](https://opentopomap.org) or [OpenStreetMap](https://www.openstreetmap.org), free volunteer-run servers that need no key. Like any website you load images from, they see your IP address and which map areas you view, which can reveal where you ride. No activity data is sent. Turn it back off for a fully offline app. Ride Atlas is an independent project and is not affiliated with Strava.
 
 ## How to get your Strava export
 
@@ -57,7 +59,7 @@ This file is the source of truth. Read it fully before doing anything. If someth
 ## 1. Hard constraints
 
 - **Static site only.** No backend, no accounts, no database, no API keys, no Strava login/API.
-- **Zero network requests at runtime.** No analytics, no CDN scripts/fonts, no map tiles, no telemetry. Everything is bundled. Add a strict Content-Security-Policy meta tag (`default-src 'self'`; allow `blob:`/`data:` for images only).
+- **Zero network requests at runtime.** No analytics, no CDN scripts/fonts, no telemetry. (Later amended by the owner: optional, off-by-default map tiles from OpenTopoMap/OpenStreetMap are allowed as images only; see Privacy above.) Everything is bundled. Add a strict Content-Security-Policy meta tag (`default-src 'self'`; allow `blob:`/`data:` for images only).
 - **All parsing happens in the browser.** Files are never uploaded anywhere.
 - **Minimal dependencies.** Vite + TypeScript + vanilla DOM (no UI framework). Allowed extras: a small FIT parser (e.g. `fit-file-parser`), `fflate` (gzip), `vitest`, `playwright`. Anything else needs a one-line justification in the commit message. Draw all charts and posters yourself with SVG/canvas, no chart libraries.
 - **Never use real personal data.** Tests and screenshots use only generated fake data.

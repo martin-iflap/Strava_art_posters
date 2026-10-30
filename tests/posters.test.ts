@@ -134,3 +134,24 @@ describe('climb overlay, around the world, weekday time of day', () => {
     expect(p.svg).toContain('2024 · when you start');
   });
 });
+
+describe('map and chart helpers', () => {
+  it('web mercator and zoom fitting', async () => {
+    const { mercator, fitZoom } = await import('../src/map');
+    expect(mercator(0, 0)).toEqual([128, 128]);
+    expect(mercator(0, 180)[0]).toBe(256);
+    expect(mercator(85.05, 0)[1]).toBeCloseTo(0, 0);
+    // the largest zoom at which the box still fits inside the padded square
+    const z = fitZoom(0.256, 0.1, 512, 32, 17);
+    expect(0.256 * 2 ** z).toBeLessThanOrEqual(448);
+    expect(0.256 * 2 ** (z + 1)).toBeGreaterThan(448);
+    expect(fitZoom(1e-9, 1e-9, 512, 32, 17)).toBe(17); // a single point is capped at the tile server's max zoom
+  });
+  it('samples series at a fraction of the distance', async () => {
+    const { sampleAt } = await import('../src/charts');
+    expect(sampleAt([0, 10, 20], 0)).toBe(0);
+    expect(sampleAt([0, 10, 20], 0.75)).toBe(15);
+    expect(sampleAt([0, 10, 20], 1)).toBe(20);
+    expect(sampleAt([7], 0.3)).toBe(7);
+  });
+});

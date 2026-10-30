@@ -82,7 +82,9 @@ summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
 .zbar i { display: block; height: 100%; }
 .loops { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
 .loop { display: flex; gap: 14px; align-items: center; background: var(--card); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); }
-.loop svg { width: 92px; height: 92px; flex: none; stroke: var(--accent); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.loop svg { width: 92px; height: 92px; flex: none; }
+.loop .map { border-radius: 10px; }
+.loop .route { stroke-width: 2; } .loop .map.has-tiles .route { stroke-width: 2.5; } .loop .route-casing { stroke-width: 4.5; }
 .loop dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 0 12px; font-size: 13px; flex: 1; }
 .loop dt { color: var(--muted); } .loop dd { margin: 0; text-align: right; }
 .controls { margin-bottom: 16px; }
@@ -100,12 +102,33 @@ button.link.name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; 
 .charts { display: flex; flex-direction: column; gap: 12px; }
 .charts .card + .card { margin-top: 0; }
 .route-card, .chart-card { margin: 0; }
-.route-card { aspect-ratio: 1; display: flex; flex-direction: column; justify-content: center; position: relative; }
-.routesvg { width: 100%; height: 100%; max-height: 100%; }
-.routesvg .route { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.route-card { display: flex; flex-direction: column; justify-content: center; }
+.routesvg { width: 100%; height: auto; aspect-ratio: 1; display: block; }
+.routesvg .route { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.routesvg .start, .routesvg .finish { stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .routesvg .start { fill: #30d158; } .routesvg .finish { fill: #ff453a; }
+.map { border-radius: 14px; touch-action: pan-y; }
+.map.has-tiles .route { stroke: #e5267b; stroke-width: 4; }
+.map .route-casing { fill: none; stroke: #fff; stroke-width: 7.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; opacity: .9; }
+.map .map-bg { fill: var(--fill); }
+:root[data-theme="dark"] .map .tiles { filter: brightness(.82) contrast(1.05); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .map .tiles { filter: brightness(.82) contrast(1.05); } }
+.map-cursor { fill: var(--accent); stroke: #fff; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.map.has-tiles .map-cursor { fill: #e5267b; }
+.map-bubble-text { font-size: 19px; }
+.bubble { fill: var(--card); stroke: var(--line); filter: drop-shadow(0 2px 6px rgba(0,0,0,.18)); }
+.bubble-text { fill: var(--text); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart { touch-action: pan-y; cursor: crosshair; border-radius: 6px; }
+.chart .cursor { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .cursor-dot { fill: var(--card); stroke: var(--accent); stroke-width: 2.5; }
+.chart-hr .cursor-dot { stroke: #ff453a; } .chart-power .cursor-dot { stroke: #ff9f0a; } .chart-elevation .cursor-dot { stroke: #30b0c7; }
+.map-attr { display: block; font-size: 10.5px; color: var(--muted); }
+.loops + .map-attr { margin-top: 8px; }
+.hint { font-size: 11.5px; margin: -4px 0 0; }
+button.map-on { min-height: 28px; padding: 3px 12px; font-size: 12px; }
 .dot.start { background: #30d158; } .dot.finish { background: #ff453a; }
-.route-card figcaption { position: absolute; left: 18px; bottom: 12px; font-size: 12px; color: var(--muted); }
+.route-card figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 12px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.route-card figcaption .map-attr { text-align: right; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 .chart-card figcaption { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
 .chart { width: 100%; height: auto; display: block; }

@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { zipSync } from 'fflate';
+import { deflateSync } from 'node:zlib';
 import { chromium, type Browser, type Page } from 'playwright';
 import { generate } from '../src/demo/generate';
 
@@ -27,14 +28,31 @@ async function launch(): Promise<Browser> {
   }
 }
 
+/** Map tile hosts: the only outside requests allowed, and only once the user has turned a map background on. */
+const TILE_HOST = /^https:\/\/([abc]\.tile\.opentopomap\.org|tile\.openstreetmap\.org)\//;
+let tilesAllowed = false;
+let tileRequests = 0;
+
 function watch(page: Page, label: string): void {
   page.on('console', (m) => { if (m.type() === 'error') problems.push(`[${label}] console error: ${m.text()}`); });
   page.on('pageerror', (e) => problems.push(`[${label}] page error: ${e.message}`));
   page.on('request', (r) => {
     const u = r.url();
+    if (TILE_HOST.test(u) && tilesAllowed) { tileRequests++; return; }
     if (!u.startsWith(ORIGIN) && !u.startsWith('blob:') && !u.startsWith('data:')) problems.push(`[${label}] network request: ${u}`);
   });
   page.on('requestfailed', (r) => problems.push(`[${label}] request failed: ${r.url()} ${r.failure()?.errorText}`));
+}
+
+/** A plain 256 × 256 PNG standing in for map tiles, so the check never needs the internet. */
+function fakeTile(): Buffer {
+  const crc = (b: Buffer) => { let c = ~0; for (const x of b) { c ^= x; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return (~c) >>> 0; };
+  const chunk = (type: string, data: Buffer) => { const t = Buffer.from(type); const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const c = Buffer.alloc(4); c.writeUInt32BE(crc(Buffer.concat([t, data]))); return Buffer.concat([len, t, data, c]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(256, 0); ihdr.writeUInt32BE(256, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(256 * 3, 0)]);
+  for (let i = 0; i < 256; i++) row.set([232, 238, 222], 1 + i * 3);
+  const raw = Buffer.concat(Array.from({ length: 256 }, () => row));
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 
 async function shoot(page: Page, name: string, fullPage = true): Promise<void> {
@@ -122,6 +140,36 @@ async function main(): Promise<void> {
           const svgs = await page.locator('.detail .routesvg').count();
           console.log('activity view:', { tiles, charts, route: svgs, title: await page.textContent('#activity-title') });
           if (tiles < 5 || charts < 2 || svgs !== 1) problems.push('activity detail looks empty');
+          // Hover: one chart shows its value, every chart and the map show the same point.
+          const box = (await page.locator('.detail .chart').first().boundingBox())!;
+          await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+          const hover = await page.evaluate(() => ({
+            charts: Array.from(document.querySelectorAll('.detail .chart .hover')).filter((g) => g.getAttribute('visibility') === 'visible').length,
+            bubble: document.querySelector('.detail .chart .bubble-text')?.textContent ?? '',
+            map: document.querySelector('.detail .map-cursor')?.parentElement?.getAttribute('visibility'),
+            mapText: document.querySelector('.detail .map-bubble-text')?.textContent ?? '',
+          }));
+          console.log('hover:', hover);
+          if (hover.charts !== charts || !/km · \d/.test(hover.bubble) || hover.map !== 'visible' || !/km · /.test(hover.mapText)) problems.push(`chart hover not shown everywhere: ${JSON.stringify(hover)}`);
+          await shoot(page, 'activity-hover-desktop-light', false);
+          await page.mouse.move(5, 5);
+          // Keyboard: focus a chart and step with the arrow keys.
+          await page.locator('.detail .chart').first().focus();
+          await page.keyboard.press('End');
+          if (!(await page.textContent('.detail .chart .bubble-text'))?.startsWith((await page.locator('.detail .chart .tick').last().textContent())!.split(' ')[0]!)) problems.push('chart End key did not jump to the end');
+          // Map background is opt-in; tiles are answered locally.
+          if (tileRequests) problems.push('map tiles requested before the user turned them on');
+          await page.route(TILE_HOST, (r) => r.fulfill({ status: 200, contentType: 'image/png', body: fakeTile() }));
+          tilesAllowed = true;
+          await page.click('.map-on');
+          await page.waitForSelector('.detail .map.has-tiles image');
+          await page.waitForTimeout(400);
+          await shoot(page, 'activity-map-desktop-light', false);
+          console.log('map tiles requested:', tileRequests);
+          if (!tileRequests) problems.push('map background did not load any tiles');
+          if (!(await page.locator('.detail .map-attr').count())) problems.push('map attribution missing');
+          await page.getByLabel('Map background').selectOption('off');
+          tilesAllowed = false;
           await a11y(page, 'activity');
           await page.getByRole('button', { name: /Older activity/ }).click();
           await page.waitForSelector('#activity-title');

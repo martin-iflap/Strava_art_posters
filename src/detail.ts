@@ -1,6 +1,7 @@
 import { dash, fmt, opt, plural } from './format';
 import { h, table } from './dom';
-import { lineChart, routeSvg } from './charts';
+import { Cursor, lineChart, sampleAt } from './charts';
+import { attribution, routeMap, type TileSource } from './map';
 import type { RouteCluster } from './stats/routes';
 import { activityZones, type Zone } from './stats/zones';
 import type { Activity, Tz, Units } from './types';
@@ -19,6 +20,10 @@ export interface DetailContext {
   open(id: string): void;
   back(): void;
   clusters(sport: string): RouteCluster[];
+  /** map background, or null when the user has not turned one on */
+  tiles: TileSource | null;
+  /** turn the default map background on */
+  enableTiles(): void;
 }
 
 const ZONE_COLORS = ['#8e8e93', '#30b0c7', '#34c759', '#ff9f0a', '#ff453a', '#bf5af2', '#ff2d55'];
@@ -95,20 +100,31 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
   if (a.avgCadence !== null) tiles.push(stat(`${fmt(a.avgCadence, 0)} rpm`, a.sport === 'Run' ? 'cadence (steps/min)' : 'average cadence'));
   root.append(h('div', { class: 'grid' }, ...tiles));
 
-  // route + charts
+  // route + charts, sharing one hover cursor (fraction of the distance)
   const xMax = distance(a.splits?.endM ?? a.distanceM, u);
+  const cursor = new Cursor();
   const charts: HTMLElement[] = [];
   const addChart = (title: string, el: SVGElement) => charts.push(h('figure', { class: 'card chart-card' }, h('figcaption', {}, title), el));
+  const base = { xMax, xUnit: du, cursor };
   if (a.profile) {
     const ev = a.profile.map((v) => elevation(v, u));
-    addChart(`Elevation (${elevationUnit(u)})`, lineChart({ values: ev, xMax, xUnit: du, fmtY: (v) => fmt(v, 0), kind: 'elevation', label: 'Elevation profile' }));
+    addChart(`Elevation (${elevationUnit(u)})`, lineChart({ ...base, values: ev, fmtY: (v) => fmt(v, 0), yUnit: elevationUnit(u), kind: 'elevation', label: 'Elevation profile' }));
   }
-  if (a.series?.speed) addChart(`Speed (${speedUnit(u)})`, lineChart({ values: a.series.speed.map((v) => speed(v, u)), xMax, xUnit: du, fmtY: (v) => fmt(v, 0), kind: 'speed', label: 'Speed along the route', zeroBased: true }));
-  if (a.series?.hr) addChart('Heart rate (bpm)', lineChart({ values: a.series.hr, xMax, xUnit: du, fmtY: (v) => fmt(v, 0), kind: 'hr', label: 'Heart rate along the route' }));
-  if (a.series?.power) addChart('Power (W)', lineChart({ values: a.series.power, xMax, xUnit: du, fmtY: (v) => fmt(v, 0), kind: 'power', label: 'Power along the route', zeroBased: true }));
+  if (a.series?.speed) addChart(`Speed (${speedUnit(u)})`, lineChart({ ...base, values: a.series.speed.map((v) => speed(v, u)), fmtY: (v) => fmt(v, 0), fmtTip: (v) => fmt(v, 1), yUnit: speedUnit(u), kind: 'speed', label: 'Speed along the route', zeroBased: true }));
+  if (a.series?.hr) addChart('Heart rate (bpm)', lineChart({ ...base, values: a.series.hr, fmtY: (v) => fmt(v, 0), yUnit: 'bpm', kind: 'hr', label: 'Heart rate along the route' }));
+  if (a.series?.power) addChart('Power (W)', lineChart({ ...base, values: a.series.power, fmtY: (v) => fmt(v, 0), yUnit: 'W', kind: 'power', label: 'Power along the route', zeroBased: true }));
+  const totalM = a.splits?.endM ?? a.distanceM;
+  const describe = (t: number) => {
+    const bits = [`${fmt(distance(t * totalM, u))} ${du}`];
+    if (a.splits) bits.push(formatDuration(timeAt(a.splits, t * a.splits.endM)));
+    if (a.profile) bits.push(`${fmt(elevation(sampleAt(a.profile, t), u), 0)} ${elevationUnit(u)}`);
+    return bits.join(' · ');
+  };
+  const mapNote = c.tiles ? attribution(c.tiles)
+    : h('button', { class: 'map-on', title: 'Loads map images from OpenTopoMap, which then knows which area you are looking at. You can change this in the filters.', onclick: c.enableTiles }, 'Show map background');
   const routeCard = a.route
-    ? h('figure', { class: 'card route-card' }, routeSvg(a.route, { markers: true, label: `Route of ${a.name}` }),
-        h('figcaption', {}, h('span', { class: 'dot start' }), ' start  ', h('span', { class: 'dot finish' }), ' finish'))
+    ? h('figure', { class: 'card route-card' }, routeMap(a.route, { tiles: c.tiles, markers: true, label: `Route of ${a.name}`, cursor, describe }),
+        h('figcaption', {}, h('span', { class: 'legend' }, h('span', { class: 'dot start' }), ' start  ', h('span', { class: 'dot finish' }), ' finish'), mapNote))
     : h('div', { class: 'card empty' }, h('p', {}, 'This activity has no GPS track (indoor, manual, or the file was missing or unreadable).'));
   root.append(h('div', { class: 'detail-grid' }, routeCard, h('div', { class: 'charts' }, ...(charts.length ? charts : [h('div', { class: 'card empty' }, h('p', {}, 'No elevation, speed, heart-rate or power data for this activity.'))]))));
 
@@ -120,7 +136,7 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
     if (!z) { sec.append(h('p', {}, stream === 'hr' ? 'This activity has no heart-rate data.' : 'This activity has no power data.')); return sec; }
     const total = z.reduce((x, y) => x + y, 0) || 1;
     const bar = h('div', { class: 'zbar', role: 'img', 'aria-label': `${title} zone distribution` }, ...z.map((s, i) => {
-      const el = h('i', {});
+      const el = h('i', { title: `${zones[i]!.name}: ${formatDuration(s)} (${fmt((s / total) * 100, 0)} %)` });
       el.style.width = `${(s / total) * 100}%`;
       el.style.background = ZONE_COLORS[i % ZONE_COLORS.length]!;
       return el;
@@ -143,7 +159,7 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
       [du, 'Time', pace ? `Pace (/${du})` : `Speed (${speedUnit(u)})`, ''],
       rows.map((r) => {
         const perM = r.seconds / r.meters;
-        const bar = h('div', { class: 'splitbar' });
+        const bar = h('div', { class: 'splitbar', title: `${du} ${r.label}: ${formatDuration(r.seconds)}` });
         bar.style.width = `${Math.max(4, Math.min(100, (best / perM) * 100))}%`;
         return [r.label, formatDuration(r.seconds), r.seconds > 0 ? (pace ? formatDuration(perM * (u === 'metric' ? 1000 : KM_PER_MI * 1000)) : fmt(speed(r.meters / r.seconds, u))) : dash, bar];
       }), { numFrom: 1 })));
