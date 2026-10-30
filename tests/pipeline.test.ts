@@ -84,6 +84,49 @@ describe('ZIP input', () => {
     expect(r.activities[10]!.distanceM).toBe(result.activities[10]!.distanceM);
     expect(r.activities[10]!.route).toEqual(result.activities[10]!.route);
   }, 60_000);
+  it('reads only the activity entries: photos and other personal files are never read', async () => {
+    const secret = new TextEncoder().encode('PHOTO-BYTES-'.repeat(5000));
+    const input: Record<string, Uint8Array> = {
+      'export_1/media/1.jpg': secret, 'export_1/messages.csv': secret, 'export_1/profile.csv': secret,
+    };
+    for (const f of files.slice(0, 40)) input[`export_1/${f.path}`] = f.data;
+    const bytes = zipSync(input, { level: 0 }); // stored, so the photo's bytes appear as-is in the archive
+    const blob = new Blob([bytes]);
+    const read: Uint8Array[] = [];
+    const spy = { size: blob.size, slice: (s: number, e: number) => ({ arrayBuffer: async () => { const b = new Uint8Array(await blob.slice(s, e).arrayBuffer()); read.push(b); return b.buffer; } }) };
+    const vfs = await expandInputs([{ path: 'export_1.zip', data: spy as unknown as Blob }]);
+    expect(vfs.map((f) => f.path).filter((p) => /media|messages|profile/.test(p))).toEqual([]);
+    const r = await importExport(vfs);
+    expect(r.activities.length).toBeGreaterThan(0);
+    const marker = 'PHOTO-BYTES-PHOTO';
+    expect(read.some((b) => new TextDecoder('latin1').decode(b).includes(marker))).toBe(false);
+    expect(read.reduce((n, b) => n + b.length, 0)).toBeLessThan(bytes.length - 3 * secret.length + 1000);
+  });
+  it('unpacks compressed entries and skips loose files it does not use without opening them', async () => {
+    const gpx = files.find((f) => f.path.endsWith('.gpx'))!;
+    const zipped = zipSync({ [gpx.path]: gpx.data }, { level: 6 });
+    const [vf] = await expandInputs([{ path: 'a.zip', data: zipped }]);
+    expect(await vf!.read()).toEqual(gpx.data);
+    const untouched = { size: 10, slice: () => { throw new Error('read'); } } as unknown as Blob;
+    expect(await expandInputs([{ path: 'media/1.jpg', data: untouched }, { path: 'notes.txt', data: untouched }])).toEqual([]);
+  });
+  it('reads ZIP64 archives (exports over 4 GB or 65,535 files)', async () => {
+    const gpx = files.find((f) => f.path.endsWith('.gpx'))!;
+    const plain = zipSync({ [gpx.path]: gpx.data }, { level: 6 });
+    // replace the end record with a ZIP64 record + locator + an end record whose fields say "see ZIP64"
+    const end = plain.length - 22, ev = new DataView(plain.buffer, end);
+    const cdSize = ev.getUint32(12, true), cdOff = ev.getUint32(16, true);
+    const z = new Uint8Array(end + 56 + 20 + 22), v = new DataView(z.buffer);
+    z.set(plain.subarray(0, end));
+    v.setUint32(end, 0x06064b50, true); v.setUint32(end + 4, 44, true);
+    v.setUint32(end + 24, 1, true); v.setUint32(end + 32, 1, true); v.setUint32(end + 40, cdSize, true); v.setUint32(end + 48, cdOff, true);
+    v.setUint32(end + 56, 0x07064b50, true); v.setUint32(end + 64, end, true); v.setUint32(end + 72, 1, true);
+    const e = end + 76;
+    v.setUint32(e, 0x06054b50, true); v.setUint16(e + 8, 0xffff, true); v.setUint16(e + 10, 0xffff, true);
+    v.setUint32(e + 12, 0xffffffff, true); v.setUint32(e + 16, 0xffffffff, true);
+    const [vf] = await expandInputs([{ path: 'big.zip', data: new Blob([z]) }]);
+    expect(await vf!.read()).toEqual(gpx.data);
+  });
   it('rejects a corrupt ZIP with a clear message', async () => {
     const bad = new Uint8Array([0x50, 0x4b, 3, 4, 1, 2, 3, 4, 5, 6]);
     await expect(expandInputs([{ path: 'a.zip', data: bad }])).rejects.toThrow(/not a readable ZIP/);

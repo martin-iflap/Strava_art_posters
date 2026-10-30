@@ -1,6 +1,5 @@
 node_modules
 dist
 screenshots
-fixtures
 *.log
 .DS_Store
