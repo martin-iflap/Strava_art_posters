@@ -72,3 +72,7 @@ The code is TypeScript with no UI framework. `src/parse` reads the export inside
 Every push to `main` is then published, and other branches get preview URLs. Leave Cloudflare Web Analytics off: the security policy would block its script anyway.
 
 On another host, set the headers listed in [SECURITY.md](SECURITY.md) yourself and serve the site over HTTPS.
+
+## License
+
+[MIT](LICENSE)
