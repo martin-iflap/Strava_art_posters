@@ -22,6 +22,11 @@ ctx.onmessage = async (e) => {
     const result = await importExport(files, (done, total, phase) => ctx.postMessage({ type: 'progress', done, total, phase }));
     ctx.postMessage({ type: 'result', result });
   } catch (err) {
-    ctx.postMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+    const msg = err instanceof Error ? err.message : String(err);
+    const tooBig = err instanceof RangeError || /allocation|memory|too large/i.test(msg);
+    ctx.postMessage({
+      type: 'error',
+      message: tooBig ? 'This file is too large for the browser to read in one piece. Extract the ZIP and drop the extracted folder instead.' : msg,
+    });
   }
 };

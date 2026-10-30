@@ -2,7 +2,7 @@
 
 **Turn your Strava data export into detailed stats and poster-quality art, privately, in your browser.**
 
-Drop in the ZIP that Strava gives you and get totals by year/month/week/weekday and sport, records and streaks, time in heart-rate and power zones, your most-ridden routes, and five downloadable posters (route facets, all-routes glow overlay, calendar heatmap, elevation ridgelines, season overview) as PNG or SVG, plus CSV/JSON exports.
+Drop in the ZIP that Strava gives you and get totals by year/month/week/weekday and sport, records and streaks, time in heart-rate and power zones, your most-ridden routes, and ten downloadable posters (route facets, all-routes glow overlay, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year) as PNG or SVG, plus CSV/JSON exports.
 
 ## Privacy
 
@@ -19,6 +19,7 @@ Don't have an export handy? Click **Try with demo data**. It is entirely made up
 ## Using it
 
 - **Stats**: overview, records, by sport/year/month/weekday/week, time in zones (set max or threshold heart rate and FTP), most-ridden routes (a heuristic, labelled as such), a sortable activity list and the import report (skipped/unreadable files with reasons).
+- **Single activity**: select any activity name (in the Activities table or in Records) for its own page: route map, elevation, speed, heart-rate and power charts, zones, per-km/mile splits, how it ranks among your other activities of that sport and how it compares with repeats of the same route. Older/Newer buttons step through your activities; the browser's Back button works.
 - **Posters**: pick a poster, theme (light, dark, ember, aurora) and size (A3 portrait, square, phone wallpaper), optionally add a stats strip, then download PNG or SVG.
 - Filters (sport, km/mi, local/UTC time zone) apply everywhere. Light/dark follows your system, with a manual toggle.
 - **Export**: activities, monthly, yearly, sports and zones as CSV, or everything as JSON.

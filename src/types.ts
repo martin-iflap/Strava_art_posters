@@ -26,6 +26,10 @@ export interface Activity {
   route: Route | null;
   /** Elevation (m) resampled to PROFILE_POINTS points evenly spaced by distance. null = no elevation stream. */
   profile: number[] | null;
+  /** Speed (m/s), heart rate and power averaged into SERIES_POINTS bins along the distance. null = not available. */
+  series: { speed: number[] | null; hr: number[] | null; power: number[] | null } | null;
+  /** Cumulative moving seconds at each full kilometre, plus the end point (metres, seconds). Used for splits. */
+  splits: { cum: number[]; endM: number; endS: number } | null;
   /** Source file inside the export, if one was read. */
   file?: string;
 }
@@ -47,6 +51,7 @@ export interface ImportResult {
 
 export const ROUTE_POINTS = 256;
 export const PROFILE_POINTS = 100;
+export const SERIES_POINTS = 100;
 
 export type Tz = 'UTC' | 'local';
 export type Units = 'metric' | 'imperial';

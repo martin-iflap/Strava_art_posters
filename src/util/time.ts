@@ -52,6 +52,19 @@ export function isoWeekKey(p: Parts): string {
 /** Day number of the Monday of the week containing the given date. */
 export const weekStart = (p: Parts) => dayNumber(p) - p.wd;
 
+/** Hour of day as a fraction (0 ≤ h < 24) in the given time-zone mode. */
+export function hourOf(ms: number, tz: Tz): number {
+  const d = new Date(ms);
+  return tz === 'UTC' ? d.getUTCHours() + d.getUTCMinutes() / 60 : d.getHours() + d.getMinutes() / 60;
+}
+
+/** "HH:MM" wall-clock time in the given time-zone mode. */
+export function clockLabel(ms: number, tz: Tz): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return tz === 'UTC' ? `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}` : `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
@@ -62,7 +75,7 @@ const MONTHS: Record<string, number> = {
  * "05.01.2023, 07:32:10" / "5/1/2023 07:32". Returns null when unrecognised.
  */
 export function parseCsvDate(raw: string): number | null {
-  const s = raw.trim();
+  const s = raw.replace(/[\u202f\u00a0]/g, ' ').trim();
   if (!s) return null;
   let m = /^([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/.exec(s);
   if (m) {

@@ -2,6 +2,7 @@ import type { Activity } from '../types';
 import { byPeriod } from '../stats/summary';
 import { distance, distanceUnit } from '../util/units';
 import { dayNumber, fromDayNumber, parts, weekStart } from '../util/time';
+import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
 import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type PosterOptions, type PosterType } from './common';
 
 export * from './common';
@@ -195,6 +196,12 @@ export function latestYear(acts: Activity[], tz: PosterOptions['tz']): number | 
 
 export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions): Poster {
   const range = rangeLabel(all, o.tz);
+  // Posters that draw whole calendar years only cover the most recent 8; keep subtitle and totals consistent with that.
+  const recent = (): Activity[] => {
+    const ys = recentYears(all, o.tz);
+    return all.filter((a) => ys.includes(parts(a.startMs, o.tz).y));
+  };
+  const metric = o.calendarMetric === 'distance' ? 'distance' : 'time';
   switch (type) {
     case 'facets': {
       const n = all.filter((a) => a.route).length;
@@ -206,8 +213,9 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       return overlay(all, o, f);
     }
     case 'calendar': {
-      const f = makeFrame(all, o, 'Calendar', `${range} · ${o.calendarMetric === 'distance' ? 'distance' : 'time'} per day`, o.strip);
-      return calendar(all, o, f);
+      const sel = recent();
+      const f = makeFrame(sel, o, 'Calendar', `${rangeLabel(sel, o.tz)} · ${metric} per day`, o.strip);
+      return calendar(sel, o, f);
     }
     case 'ridgelines': {
       const f = makeFrame(all, o, 'Elevation profiles', `${o.ridgeSelect === 'recent' ? 'Most recent' : o.ridgeSelect === 'longest' ? 'Longest' : 'Biggest climbs'} · ${Math.min(o.ridgeCount, all.filter((a) => a.profile).length)} activities`, o.strip);
@@ -219,6 +227,27 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       const f = makeFrame(ys, o, 'Season', `${year} · ${ys.length} activities`, false);
       return season(ys, o, f, year);
     }
+    case 'circles': {
+      const f = makeFrame(all, o, 'Activity bubbles', `${range} · area shows distance · ${Math.min(1000, all.filter((a) => a.distanceM > 0).length)} activities`, o.strip);
+      return circles(all, o, f);
+    }
+    case 'timeofday': {
+      const f = makeFrame(all, o, 'Time of day', `${range} · when you start (${o.tz === 'UTC' ? 'UTC' : 'local time'}) · by ${o.todRows}`, o.strip);
+      return timeOfDay(all, o, f);
+    }
+    case 'punchcard': {
+      const f = makeFrame(all, o, 'Weekly rhythm', `${range} · weekday and hour · by ${o.punchMetric}`, o.strip);
+      return punchCard(all, o, f);
+    }
+    case 'rings': {
+      const sel = recent();
+      const f = makeFrame(sel, o, 'Year rings', `${rangeLabel(sel, o.tz)} · ${metric} per day · oldest year inside`, o.strip);
+      return rings(sel, o, f);
+    }
+    case 'cumulative': {
+      const sel = recent();
+      const f = makeFrame(sel, o, 'Year over year', `${rangeLabel(sel, o.tz)} · cumulative ${metric}`, o.strip);
+      return cumulative(sel, o, f);
+    }
   }
 }
-

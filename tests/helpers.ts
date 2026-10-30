@@ -4,7 +4,7 @@ let n = 0;
 export function act(p: Partial<Activity> & { startMs: number }): Activity {
   return {
     id: String(++n), name: 'A', sport: 'Ride', distanceM: 10_000, movingS: 1800, elapsedS: 1900, elevGainM: 100, maxSpeedMps: null,
-    avgHr: null, maxHr: null, avgPower: null, maxPower: null, avgCadence: null, hrHist: null, powerHist: null, route: null, profile: null,
+    avgHr: null, maxHr: null, avgPower: null, maxPower: null, avgCadence: null, hrHist: null, powerHist: null, route: null, profile: null, series: null, splits: null,
     ...p,
   };
 }

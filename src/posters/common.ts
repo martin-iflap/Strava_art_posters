@@ -3,13 +3,18 @@ import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
 
-export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season';
+export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative';
 export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'facets', name: 'Route facets' },
   { id: 'overlay', name: 'All routes' },
   { id: 'calendar', name: 'Calendar heatmap' },
   { id: 'ridgelines', name: 'Elevation ridgelines' },
   { id: 'season', name: 'Season overview' },
+  { id: 'circles', name: 'Activity bubbles' },
+  { id: 'timeofday', name: 'Time-of-day ridges' },
+  { id: 'punchcard', name: 'Weekly rhythm' },
+  { id: 'rings', name: 'Year rings' },
+  { id: 'cumulative', name: 'Year over year' },
 ];
 
 export interface Theme { id: string; name: string; bg: string; fg: string; muted: string; accent: string }
@@ -41,10 +46,14 @@ export interface PosterOptions {
   ridgeCount: number;
   /** null = latest year with data */
   seasonYear: number | null;
+  circleColor: 'year' | 'sport';
+  todRows: 'year' | 'month' | 'weekday';
+  punchMetric: 'count' | 'distance';
 }
 
 export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> = {
   theme: 'dark', size: 'a3', strip: true, facetSort: 'date', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
+  circleColor: 'year', todRows: 'year', punchMetric: 'count',
 };
 
 export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -56,6 +65,26 @@ export function mix(a: string, b: string, t: number): string {
   const [r1, g1, b1] = hex(a), [r2, g2, b2] = hex(b);
   const m = (x: number, y: number) => Math.round(x + (y - x) * t).toString(16).padStart(2, '0');
   return `#${m(r1!, r2!)}${m(g1!, g2!)}${m(b1!, b2!)}`;
+}
+
+function toHsl(c: string): [number, number, number] {
+  const [r, g, b] = hex(c).map((v) => v! / 255) as [number, number, number];
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  if (d === 0) return [0, 0, l];
+  const sat = d / (1 - Math.abs(2 * l - 1));
+  const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, sat, l];
+}
+function fromHsl(h: number, s: number, l: number): string {
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))))).toString(16).padStart(2, '0');
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+/** n distinguishable colours spread around the theme accent's hue (about ±100°). */
+export function palette(t: Theme, n: number): string[] {
+  const [h, s, l] = toHsl(t.accent);
+  return Array.from({ length: n }, (_, i) => fromHsl((h + (n === 1 ? 0 : (i / (n - 1) - 0.5) * 200) + 360) % 360, Math.max(0.55, s), Math.min(0.68, Math.max(0.5, l))));
 }
 
 /** Calendar colour ramp: empty day, then four intensities toward the accent. */

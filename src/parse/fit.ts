@@ -25,6 +25,8 @@ export async function parseFit(bytes: Uint8Array): Promise<ParsedTrack> {
     tr.cad.push(num(r.cadence));
     tr.power.push(num(r.power));
   }
+  // FIT stores running cadence as strides per minute (one foot); Strava shows steps per minute.
+  if (tr.sport === 'Run') tr.cad = tr.cad.map((c) => c * 2);
   if (!tr.t.length) throw new Error('FIT contains no record messages');
   return tr;
 }

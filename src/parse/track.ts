@@ -1,4 +1,4 @@
-import { PROFILE_POINTS, ROUTE_POINTS, type Route } from '../types';
+import { PROFILE_POINTS, ROUTE_POINTS, SERIES_POINTS, type Activity, type Route } from '../types';
 import { haversine, resample, resampleSeries } from '../util/geo';
 
 /** One parsed activity file: parallel arrays, NaN where a sample has no value. */
@@ -37,6 +37,8 @@ export interface TrackSummary {
   powerHist: [number, number][] | null;
   route: Route | null;
   profile: number[] | null;
+  series: Activity['series'];
+  splits: Activity['splits'];
 }
 
 /** Gaps longer than this between samples are treated as pauses and contribute no time. */
@@ -73,6 +75,34 @@ export function elevationGain(ele: number[], threshold = 2): number {
 }
 
 const finite = (v: number) => Number.isFinite(v);
+
+/** Average values into n equal-width bins along x (distance). Empty bins repeat the previous value. */
+function binAverage(x: number[], v: number[], n: number, digits: number): number[] | null {
+  const idx: number[] = [];
+  for (let i = 0; i < x.length; i++) if (finite(x[i]!) && finite(v[i]!)) idx.push(i);
+  if (idx.length < 2) return null;
+  const x0 = x[idx[0]!]!;
+  const span = x[idx[idx.length - 1]!]! - x0;
+  if (span <= 0) return null;
+  const sum = new Array<number>(n).fill(0);
+  const cnt = new Array<number>(n).fill(0);
+  for (const i of idx) {
+    const b = Math.min(n - 1, Math.floor(((x[i]! - x0) / span) * n));
+    sum[b]! += v[i]!;
+    cnt[b]!++;
+  }
+  const out: number[] = [];
+  let prev: number | null = null;
+  for (let b = 0; b < n; b++) {
+    const val: number | null = cnt[b]! ? sum[b]! / cnt[b]! : prev;
+    if (val !== null) prev = val;
+    out.push(val ?? NaN);
+  }
+  const first = out.find(finite);
+  if (first === undefined) return null;
+  const f = 10 ** digits;
+  return out.map((o) => Math.round((finite(o) ? o : first) * f) / f);
+}
 
 function histogram(values: number[], dur: number[], lo: number, hi: number): { hist: [number, number][]; avg: number; max: number } | null {
   const bins = new Map<number, number>();
@@ -116,23 +146,38 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
   const cd = cum.filter(finite);
   const distanceM = cd.length ? cd[cd.length - 1]! - cd[0]! : 0;
 
-  // Moving time: samples whose speed to the next distance-bearing sample is above the threshold.
+  // Moving time: samples whose speed to the previous distance-bearing sample is above the threshold.
+  // The same pass records per-sample speed and cumulative moving time at each full km (for splits).
   let movingS = 0;
   let maxSpeed = 0;
+  const spd = new Array<number>(n).fill(NaN);
+  const kmCum: number[] = [];
+  let splits: TrackSummary['splits'] = null;
   if (cd.length > 1 && times.length > 1) {
+    const c0 = cd[0]!;
+    let nextKm = 1000;
     let last = -1;
     for (let i = 0; i < n; i++) {
       if (!finite(cum[i]!) || !finite(tr.t[i]!)) continue;
       if (last >= 0) {
         const dt = (tr.t[i]! - tr.t[last]!) / 1000;
         if (dt > 0 && dt <= MAX_GAP_S) {
-          const v = (cum[i]! - cum[last]!) / dt;
-          if (v >= MOVING_MPS) movingS += dt;
+          const dd = cum[i]! - cum[last]!;
+          const v = dd / dt;
+          const moving = v >= MOVING_MPS;
+          const before = movingS;
+          if (moving) movingS += dt;
           if (v > maxSpeed && v < 40) maxSpeed = v;
+          if (v >= 0 && v < 40) spd[i] = v;
+          while (dd > 0 && cum[i]! - c0 >= nextKm) {
+            kmCum.push(before + (moving ? ((nextKm - (cum[last]! - c0)) / dd) * dt : 0));
+            nextKm += 1000;
+          }
         }
       }
       last = i;
     }
+    splits = { cum: kmCum.map((c) => Math.round(c * 10) / 10), endM: Math.round(cd[cd.length - 1]! - c0), endS: Math.round(movingS * 10) / 10 };
   } else movingS = dur.reduce((a, b) => a + b, 0);
 
   const hr = histogram(tr.hr, dur, 30, 250);
@@ -152,6 +197,12 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
     profile = resampleSeries(ev, x, PROFILE_POINTS).map((v) => Math.round(v * 10) / 10);
   }
 
+  // Series along distance (or sample index when the file has no distance).
+  const xs = cd.length > 1 ? cum.map((c) => (finite(c) ? c - cd[0]! : NaN)) : tr.t.map((_, i) => i);
+  const sp = binAverage(xs, spd, SERIES_POINTS, 2);
+  const hrS = hr ? binAverage(xs, tr.hr.map((v) => (v >= 30 && v <= 250 ? v : NaN)), SERIES_POINTS, 0) : null;
+  const pwS = pw && pw.max > 0 ? binAverage(xs, tr.power.map((v) => (v >= 0 && v <= 3000 ? v : NaN)), SERIES_POINTS, 0) : null;
+
   return {
     startMs,
     elapsedS,
@@ -168,5 +219,7 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
     powerHist: pw && pw.max > 0 ? pw.hist : null,
     route,
     profile,
+    series: sp || hrS || pwS ? { speed: sp, hr: hrS, power: pwS } : null,
+    splits,
   };
 }

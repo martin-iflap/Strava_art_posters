@@ -141,6 +141,16 @@ export function parseActivitiesCsv(text: string): CsvResult {
     }
     return null;
   };
+  // Two columns: the first is rounded km/mi, the last is metres. If the metres cell is empty, fall back to the first (km).
+  const distanceOf = (row: string[]): number | null => {
+    if (distIdx.length >= 2) {
+      const m = parseNumber(row[distIdx[distIdx.length - 1]!]);
+      if (m !== null) return m;
+      const km = parseNumber(row[distIdx[0]!]);
+      return km === null ? null : km * 1000;
+    }
+    return parseNumber(row[distIdx[0]!]);
+  };
   const str = (row: string[], f: Field) => (cols[f].length ? (row[cols[f][0]!] ?? '').trim() : '');
 
   const rows: CsvActivity[] = [];
@@ -150,7 +160,7 @@ export function parseActivitiesCsv(text: string): CsvResult {
     if (startMs === null) { skipped.push({ subject: where, reason: `unrecognised date "${str(row, 'date')}"` }); return; }
     const type = str(row, 'type');
     if (!type) { skipped.push({ subject: where, reason: 'missing activity type' }); return; }
-    const dist = distIdx.length ? last(row, 'distance') : null;
+    const dist = distIdx.length ? distanceOf(row) : null;
     const clampHr = (v: number | null) => (v !== null && v >= 30 && v <= 250 ? v : null);
     rows.push({
       id: str(row, 'id') || `row-${n + 2}`,

@@ -106,6 +106,36 @@ async function main(): Promise<void> {
           await shoot(page, `posters-${label}`, false);
         }
         if (label === 'desktop-light') {
+          // single-activity view: open from the table, check content, history back, search keeps focus
+          await page.fill('#activity-search', 'Ride');
+          if ((await page.evaluate(() => document.activeElement?.id)) !== 'activity-search') problems.push('search box lost focus while typing');
+          await page.fill('#activity-search', '');
+          await page.locator('.link.name').first().click();
+          await page.waitForSelector('#activity-title');
+          await shoot(page, 'activity-desktop-light');
+          const tiles = await page.locator('.detail .stat').count();
+          const charts = await page.locator('.detail .chart').count();
+          const svgs = await page.locator('.detail .routesvg').count();
+          console.log('activity view:', { tiles, charts, route: svgs, title: await page.textContent('#activity-title') });
+          if (tiles < 5 || charts < 2 || svgs !== 1) problems.push('activity detail looks empty');
+          await a11y(page, 'activity');
+          await page.getByRole('button', { name: /Older activity/ }).click();
+          await page.waitForSelector('#activity-title');
+          await page.goBack();
+          await page.waitForTimeout(100);
+          await page.goBack();
+          await page.waitForSelector('#overview');
+          if (await page.locator('#activity-title').count()) problems.push('browser back did not leave the activity view');
+          await page.locator('.link').first().click();
+          await page.waitForSelector('#activity-title');
+          await page.getByRole('button', { name: /Older activity/ }).click();
+          await page.click('#back'); // must skip over the stacked activity entries
+          await page.waitForSelector('#overview');
+          // keyboard focus survives a re-render
+          await page.locator('.filters select').nth(1).focus();
+          await page.locator('.filters select').nth(1).selectOption('imperial');
+          if ((await page.evaluate(() => document.activeElement?.tagName)) !== 'SELECT') problems.push('focus lost after changing a filter');
+          await page.locator('.filters select').nth(1).selectOption('metric');
           const checks = await page.evaluate(() => ({
             h2: Array.from(document.querySelectorAll('h2')).map((e) => e.textContent),
             tables: document.querySelectorAll('table').length,
@@ -133,6 +163,8 @@ async function main(): Promise<void> {
       ['Route facets', 'dark', 'a3', 'facets'], ['All routes', 'ember', 'a3', 'overlay'], ['Calendar heatmap', 'light', 'a3', 'calendar'],
       ['Elevation ridgelines', 'aurora', 'a3', 'ridgelines'], ['Season overview', 'dark', 'a3', 'season'],
       ['Route facets', 'light', 'phone', 'facets-phone'], ['All routes', 'dark', 'square', 'overlay-square'],
+      ['Activity bubbles', 'dark', 'a3', 'circles'], ['Time-of-day ridges', 'ember', 'a3', 'timeofday'], ['Weekly rhythm', 'light', 'square', 'punchcard'],
+      ['Year rings', 'aurora', 'square', 'rings'], ['Year over year', 'dark', 'a3', 'cumulative'],
     ];
     const pctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
     const pp = await pctx.newPage();

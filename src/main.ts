@@ -1,9 +1,12 @@
 import './style.css';
-import { append, download, h, svg, table } from './dom';
+import { append, download, h, table } from './dom';
+import { routeSvg } from './charts';
+import { activityView } from './detail';
+import { dash, fmt, opt, plural } from './format';
 import { fromDrop, fromFileList } from './input';
 import { activitiesCsv, exportFilename, periodCsv, sportCsv, statsJson, zonesCsv, type ExportOptions } from './export';
 import type { RawInput } from './parse/archive';
-import { clusterRoutes } from './stats/routes';
+import { clusterRoutes, type RouteCluster } from './stats/routes';
 import { byPeriod, byWeekday, bySport, filterSport, records, sportsOf, summarize, type Summary } from './stats/summary';
 import { activityZones, hrZones, observedMaxHr, powerZones, zoneTotals, zonesBy, type HrZoneConfig, type Zone, type ZoneRow } from './stats/zones';
 import type { Activity, ImportResult, Tz, Units } from './types';
@@ -21,12 +24,17 @@ interface State {
   hr: HrZoneConfig | null;
   ftp: number | null;
   showAll: boolean;
-  view: 'stats' | 'posters';
+  view: 'stats' | 'posters' | 'activity';
+  activityId: string | null;
+  returnView: 'stats' | 'posters';
+  returnScroll: number;
+  query: string;
+  sortKey: 'date' | 'distance' | 'time' | 'elevation' | 'speed';
   theme: 'auto' | 'light' | 'dark';
   sheet: boolean;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', theme: 'auto', sheet: false };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, returnView: 'stats', returnScroll: 0, query: '', sortKey: 'date', theme: 'auto', sheet: false };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 let previewUrl: string | null = null;
@@ -118,7 +126,8 @@ function renderImporting(phase: string, done: number, total: number): void {
     h('div', { class: 'drop', role: 'status', 'aria-live': 'polite' },
       h('h2', {}, 'Reading your export…'),
       h('p', {}, phase),
-      h('progress', { max: total, value: done, 'aria-label': 'Import progress' }))));
+      h('progress', { max: total, value: done, 'aria-label': 'Import progress' }),
+      h('div', { class: 'row' }, h('button', { id: 'cancel-import', onclick: () => { worker?.terminate(); worker = null; renderImport(); } }, 'Cancel')))));
 }
 
 function renderImport(error?: string): void {
@@ -153,18 +162,11 @@ function renderImport(error?: string): void {
 
 // ---------- formatting ----------
 
-const fmt = (v: number, d = 1) => v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const dist = (m: number) => fmt(distance(m, state.units));
 const elev = (m: number) => fmt(elevation(m, state.units), 0);
-const dash = '–';
-const opt = (v: number | null, d = 0) => (v === null ? dash : fmt(v, d));
 const dateOf = (ms: number) => ymd(parts(ms, state.tz));
 
 // ---------- results ----------
-
-function exportOptions(acts: Activity[]): ExportOptions {
-  return { units: state.units, tz: state.tz, hrZones: currentHrZones(acts), powerZones: state.ftp ? powerZones(state.ftp) : null };
-}
 
 function currentHrZones(all: Activity[]): Zone[] | null {
   if (!state.hr) {
@@ -175,7 +177,26 @@ function currentHrZones(all: Activity[]): Zone[] | null {
   return hrZones(state.hr);
 }
 
+/** Identify the focused control so it can be re-focused after the DOM is rebuilt (keyboard users keep their place). */
+function focusKey(): { idx: number; tag: string; label: string } | null {
+  const el = document.activeElement as HTMLElement | null;
+  if (!el || !app.contains(el) || !/^(SELECT|INPUT|BUTTON|A)$/.test(el.tagName)) return null;
+  const all = Array.from(app.querySelectorAll('select, input, button, a'));
+  return { idx: all.indexOf(el), tag: el.tagName, label: controlLabel(el) };
+}
+function controlLabel(el: Element): string {
+  return el.getAttribute('aria-label') || el.closest('label')?.childNodes[0]?.textContent || (el.tagName === 'SELECT' ? '' : el.textContent?.slice(0, 40)) || '';
+}
 function render(): void {
+  const key = focusKey();
+  renderNow();
+  if (key) {
+    const el = Array.from(app.querySelectorAll('select, input, button, a'))[key.idx] as HTMLElement | undefined;
+    if (el && el.tagName === key.tag && controlLabel(el) === key.label) el.focus({ preventScroll: true });
+  }
+}
+
+function renderNow(): void {
   if (!state.result) return renderImport();
   const { result } = state;
   const all = result.activities;
@@ -188,8 +209,8 @@ function render(): void {
       h('select', { onchange: (e) => { on((e.target as HTMLSelectElement).value as T); render(); } },
         ...options.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
 
-  const setView = (v: State['view']) => { state.view = v; state.sheet = false; animate = true; render(); window.scrollTo(0, 0); };
-  const navBtn = (v: State['view'], label: string) => h('button', { 'aria-current': state.view === v ? 'page' : undefined, onclick: () => setView(v) }, label);
+  const setView = (v: 'stats' | 'posters') => { state.view = v; state.sheet = false; animate = true; render(); window.scrollTo(0, 0); };
+  const navBtn = (v: 'stats' | 'posters', label: string) => h('button', { 'aria-current': (state.view === v || (v === 'stats' && state.view === 'activity')) ? 'page' : undefined, onclick: () => setView(v) }, label);
   const sections: [string, string][] = [['overview', 'Overview'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
   const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar' },
     h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
@@ -204,7 +225,7 @@ function render(): void {
       h('button', { class: 'load', onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'Load another export')));
 
   const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Main tabs' },
-    h('button', { 'aria-current': state.view === 'stats' ? 'page' : undefined, onclick: () => setView('stats') }, 'Stats'),
+    h('button', { 'aria-current': state.view !== 'posters' ? 'page' : undefined, onclick: () => setView('stats') }, 'Stats'),
     h('button', { 'aria-current': state.view === 'posters' ? 'page' : undefined, onclick: () => setView('posters') }, 'Posters'),
     h('button', { 'aria-expanded': String(state.sheet), 'aria-controls': 'filters', onclick: () => { state.sheet = !state.sheet; render(); } }, 'Filters'),
     h('button', { onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'New'));
@@ -224,6 +245,20 @@ function render(): void {
       h('p', { class: 'warn', role: 'alert' }, 'Nothing could be read from these files. Make sure you picked the whole Strava export (the ZIP, or the folder containing activities.csv).')), issuesSection(result));
     mount();
     return;
+  }
+
+  if (state.view === 'activity') {
+    const a = all.find((x) => x.id === state.activityId);
+    if (a) {
+      main.append(activityView(a, {
+        units: state.units, tz: state.tz, hz, pz, all,
+        list: [...(acts.some((x) => x.id === a.id) ? acts : all)].sort((x, y) => y.startMs - x.startMs),
+        open: openActivity, back: () => closeActivity(), clusters: (sport) => clustersFor(all, sport),
+      }));
+      mount();
+      return;
+    }
+    state.view = 'stats';
   }
 
   if (state.view === 'posters') {
@@ -276,18 +311,18 @@ function statGrid(s: Summary, acts: Activity[]): HTMLElement {
 function recordsSection(acts: Activity[]): HTMLElement {
   const r = records(acts, state.tz);
   const u = state.units;
-  const link = (a: Activity | null, _what: string) => (a ? `${a.name} (${dateOf(a.startMs)})` : dash);
-  const rows: (string | null)[][] = [
-    ['Longest activity', r.longest ? `${dist(r.longest.distanceM)} ${distanceUnit(u)}` : dash, link(r.longest, '')],
-    ['Biggest climb', r.biggestClimb ? `${elev(r.biggestClimb.elevGainM)} ${elevationUnit(u)}` : dash, link(r.biggestClimb, '')],
-    ['Longest duration', r.longestDuration ? formatDuration(r.longestDuration.movingS) : dash, link(r.longestDuration, '')],
-    ['Fastest average speed (≥ 5 km, ≥ 10 min)', r.fastest ? `${fmt(speed(r.fastest.distanceM / r.fastest.movingS, u))} ${speedUnit(u)}` : dash, link(r.fastest, '')],
-    ['Most active day', r.mostActiveDay ? `${dist(r.mostActiveDay.distanceM)} ${distanceUnit(u)}` : dash, r.mostActiveDay ? `${r.mostActiveDay.date} (${r.mostActiveDay.count} activities)` : ''],
-    ['Most active month', r.mostActiveMonth ? `${dist(r.mostActiveMonth.distanceM)} ${distanceUnit(u)}` : dash, r.mostActiveMonth ? `${r.mostActiveMonth.key} (${r.mostActiveMonth.count} activities)` : ''],
-    ['Longest streak', r.longestStreak ? `${r.longestStreak.days} days` : dash, r.longestStreak ? `${r.longestStreak.start} → ${r.longestStreak.end}` : ''],
-    ['Current streak (as of last activity)', r.currentStreak ? `${r.currentStreak.days} days` : dash, r.currentStreak ? `ending ${r.currentStreak.end}` : ''],
+  const link = (a: Activity | null): Node | string => (a ? h('span', {}, h('button', { class: 'link', onclick: () => openActivity(a.id) }, a.name), ` (${dateOf(a.startMs)})`) : dash);
+  const rows: (string | Node | null)[][] = [
+    ['Longest activity', r.longest ? `${dist(r.longest.distanceM)} ${distanceUnit(u)}` : dash, link(r.longest)],
+    ['Biggest climb', r.biggestClimb ? `${elev(r.biggestClimb.elevGainM)} ${elevationUnit(u)}` : dash, link(r.biggestClimb)],
+    ['Longest duration', r.longestDuration ? formatDuration(r.longestDuration.movingS) : dash, link(r.longestDuration)],
+    ['Fastest average speed (≥ 5 km, ≥ 10 min)', r.fastest ? `${fmt(speed(r.fastest.distanceM / r.fastest.movingS, u))} ${speedUnit(u)}` : dash, link(r.fastest)],
+    ['Most active day', r.mostActiveDay ? `${dist(r.mostActiveDay.distanceM)} ${distanceUnit(u)}` : dash, r.mostActiveDay ? `${r.mostActiveDay.date} (${plural(r.mostActiveDay.count, 'activity', 'activities')})` : ''],
+    ['Most active month', r.mostActiveMonth ? `${dist(r.mostActiveMonth.distanceM)} ${distanceUnit(u)}` : dash, r.mostActiveMonth ? `${r.mostActiveMonth.key} (${plural(r.mostActiveMonth.count, 'activity', 'activities')})` : ''],
+    ['Longest streak', r.longestStreak ? plural(r.longestStreak.days, 'day') : dash, r.longestStreak ? `${r.longestStreak.start} → ${r.longestStreak.end}` : ''],
+    ['Current streak (as of last activity)', r.currentStreak ? plural(r.currentStreak.days, 'day') : dash, r.currentStreak ? `ending ${r.currentStreak.end}` : ''],
   ];
-  return h('div', {}, h('h2', { id: 'records' }, 'Records'), h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows.map((x) => x.map((c) => c ?? '')), { numFrom: 1 })));
+  return h('div', {}, h('h2', { id: 'records' }, 'Records'), h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows.map((x) => x.map((c) => c ?? '')), { numCols: [1] })));
 }
 
 function summaryTable(label: string, rows: [string, Summary][]): HTMLElement {
@@ -313,7 +348,10 @@ function posterSection(acts: Activity[]): HTMLElement {
     pick('Size', poster.size, SIZES.map((s): [string, string] => [s.id, s.name]), (v) => (poster.size = v)),
     h('label', {}, h('input', { type: 'checkbox', checked: poster.strip, onchange: (e) => { poster.strip = (e.target as HTMLInputElement).checked; render(); } }), 'Stats strip'));
   if (poster.type === 'facets') controls.append(pick('Sort by', poster.facetSort, [['date', 'Date'], ['distance', 'Distance']], (v) => (poster.facetSort = v)));
-  if (poster.type === 'calendar') controls.append(pick('Colour by', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v)));
+  if (poster.type === 'calendar' || poster.type === 'rings' || poster.type === 'cumulative') controls.append(pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v)));
+  if (poster.type === 'circles') controls.append(pick('Colour by', poster.circleColor, [['year', 'Year'], ['sport', 'Sport']], (v) => (poster.circleColor = v)));
+  if (poster.type === 'timeofday') controls.append(pick('Rows', poster.todRows, [['year', 'Years'], ['month', 'Months'], ['weekday', 'Weekdays']], (v) => (poster.todRows = v)));
+  if (poster.type === 'punchcard') controls.append(pick('Dot size', poster.punchMetric, [['count', 'Activities'], ['distance', 'Distance']], (v) => (poster.punchMetric = v)));
   if (poster.type === 'ridgelines') {
     controls.append(
       pick('Activities', poster.ridgeSelect, [['recent', 'Most recent'], ['longest', 'Longest'], ['climbiest', 'Biggest climbs']], (v) => (poster.ridgeSelect = v)),
@@ -334,7 +372,7 @@ function posterSection(acts: Activity[]): HTMLElement {
   const dl = h('div', { class: 'row' },
     h('button', { id: 'dl-png', class: 'primary', onclick: async () => {
       status.textContent = 'Rendering PNG…';
-      try { download(file('png'), await svgToPng(result.svg, result.width, result.height), 'image/png'); status.textContent = `${result.width} × ${result.height} px`; }
+      try { const png = await svgToPng(result.svg, result.width, result.height); download(file('png'), png.blob, 'image/png'); status.textContent = `${png.width} × ${png.height} px`; }
       catch (e) { status.textContent = e instanceof Error ? e.message : String(e); }
     } }, 'Download PNG'),
     h('button', { id: 'dl-svg', onclick: () => download(file('svg'), result.svg, 'image/svg+xml') }, 'Download SVG'),
@@ -371,20 +409,21 @@ function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: 
     h('option', { value: 'maxHr', selected: state.hr?.mode === 'maxHr' }, 'Max HR'),
     h('option', { value: 'lthr', selected: state.hr?.mode === 'lthr' }, 'Threshold HR'));
   const ftpIn = h('input', { type: 'number', min: 50, max: 600, value: state.ftp ?? '', placeholder: 'e.g. 250', 'aria-label': 'FTP in watts' });
-  const apply = h('button', {
-    onclick: () => {
-      const v = Number(hrIn.value);
-      if (v >= 100 && v <= 230) state.hr = { mode: modeSel.value as HrZoneConfig['mode'], value: v };
-      const f = Number(ftpIn.value);
-      state.ftp = f >= 50 && f <= 600 ? f : null;
-      render();
-    },
-  }, 'Apply');
-  sec.append(h('div', { class: 'row card' },
+  const apply = h('button', { type: 'submit' }, 'Apply');
+  const form = h('form', { class: 'row card', 'aria-label': 'Zone settings', onsubmit: (e) => {
+    e.preventDefault();
+    const v = Number(hrIn.value);
+    if (v >= 100 && v <= 230) state.hr = { mode: modeSel.value as HrZoneConfig['mode'], value: v };
+    const f = Number(ftpIn.value);
+    state.ftp = f >= 50 && f <= 600 ? f : null;
+    render();
+  } },
     h('label', {}, 'Heart-rate zones from', modeSel, hrIn, 'bpm'),
-    h('label', {}, 'FTP', ftpIn, 'W'), apply));
-  sec.append(h('p', {}, state.hr && observedMaxHr(all) === state.hr.value && state.hr.mode === 'maxHr'
-    ? 'Max HR defaults to the highest value recorded in your data. Set your own for better zones.' : ''));
+    h('label', {}, 'FTP', ftpIn, 'W'), apply);
+  sec.append(form);
+  if (state.hr && observedMaxHr(all) === state.hr.value && state.hr.mode === 'maxHr') {
+    sec.append(h('p', {}, 'Max HR defaults to the highest value recorded in your data. Set your own for better zones.'));
+  }
 
   const block = (stream: 'hr' | 'power', zones: Zone[] | null, noun: string, hint: string) => {
     sec.append(h('h3', {}, stream === 'hr' ? 'Heart rate' : 'Power'));
@@ -403,59 +442,109 @@ function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: 
 
 // ---------- loops ----------
 
-let clusterCache: { key: unknown; sport: string; value: ReturnType<typeof clusterRoutes> } | null = null;
-function cachedClusters(acts: Activity[]) {
-  if (!clusterCache || clusterCache.key !== state.result || clusterCache.sport !== state.sport) {
-    clusterCache = { key: state.result, sport: state.sport, value: clusterRoutes(acts) };
-  }
-  return clusterCache.value;
+const clusterCache = new Map<string, RouteCluster[]>();
+let clusterOwner: unknown = null;
+/** Route clusters for one sport (or all), cached until a new export is loaded. */
+function clustersFor(all: Activity[], sport: string): RouteCluster[] {
+  if (clusterOwner !== state.result) { clusterCache.clear(); clusterOwner = state.result; }
+  let v = clusterCache.get(sport);
+  if (!v) { v = clusterRoutes(filterSport(all, sport)); clusterCache.set(sport, v); }
+  return v;
 }
 
 function loopsSection(acts: Activity[]): HTMLElement {
-  const sec = h('div', {}, h('h2', { id: 'loops' }, 'Most ridden routes'),
+  const sec = h('div', {}, h('h2', { id: 'loops' }, 'Most repeated routes'),
     h('p', {}, 'A heuristic: GPS tracks of similar length that stay within about 80 m of each other on average are grouped, in either direction. Close calls can land on either side.'));
-  const clusters = cachedClusters(acts).slice(0, 12);
+  const clusters = clustersFor(state.result!.activities, state.sport).slice(0, 12);
   if (!clusters.length) { sec.append(h('p', {}, 'No repeated routes found (needs at least two GPS activities that follow the same path).')); return sec; }
   const u = state.units;
-  sec.append(h('div', { class: 'loops' }, ...clusters.map((c) => h('div', { class: 'loop' }, routePreview(c.preview),
+  sec.append(h('div', { class: 'loops' }, ...clusters.map((c) => h('div', { class: 'loop' }, routeSvg(c.preview),
     h('dl', {},
-      h('dt', {}, 'Times ridden'), h('dd', {}, String(c.count)),
+      h('dt', {}, 'Times done'), h('dd', {}, String(c.count)),
       h('dt', {}, 'Distance'), h('dd', {}, `${dist(c.avgDistanceM)} ${distanceUnit(u)}`),
       h('dt', {}, 'Avg time'), h('dd', {}, formatDuration(c.avgMovingS)),
       h('dt', {}, 'Best time'), h('dd', {}, formatDuration(c.bestMovingS)))))));
   return sec;
 }
 
-function routePreview(route: number[]): SVGElement {
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
-  for (let i = 0; i < route.length; i += 2) {
-    minLat = Math.min(minLat, route[i]!); maxLat = Math.max(maxLat, route[i]!);
-    minLon = Math.min(minLon, route[i + 1]!); maxLon = Math.max(maxLon, route[i + 1]!);
-  }
-  const k = Math.cos(((minLat + maxLat) / 2) * (Math.PI / 180));
-  const w = (maxLon - minLon) * k || 1e-6, hh = maxLat - minLat || 1e-6;
-  const scale = 92 / Math.max(w, hh);
-  const ox = (100 - w * scale) / 2, oy = (100 - hh * scale) / 2;
-  const pts: string[] = [];
-  for (let i = 0; i < route.length; i += 2) pts.push(`${(ox + (route[i + 1]! - minLon) * k * scale).toFixed(1)},${(oy + (maxLat - route[i]!) * scale).toFixed(1)}`);
-  return svg('svg', { viewBox: '0 0 100 100', role: 'img', 'aria-label': 'Route preview' }, svg('polyline', { points: pts.join(' ') }));
-}
-
 // ---------- activities ----------
+
+const SORTS: Record<State['sortKey'], [string, (a: Activity) => number]> = {
+  date: ['Date (newest first)', (a) => a.startMs],
+  distance: ['Distance', (a) => a.distanceM],
+  time: ['Moving time', (a) => a.movingS],
+  elevation: ['Elevation gain', (a) => a.elevGainM],
+  speed: ['Average speed', (a) => (a.movingS > 0 ? a.distanceM / a.movingS : 0)],
+};
 
 function activitiesSection(acts: Activity[], hz: Zone[] | null): HTMLElement {
   const u = state.units;
-  const sorted = [...acts].sort((a, b) => b.startMs - a.startMs);
-  const shown = state.showAll ? sorted : sorted.slice(0, 100);
+  const holder = h('div', { class: 'card scroll' });
+  const status = h('p', { class: 'muted', role: 'status' });
+  const moreBtn = h('button', { onclick: () => { state.showAll = true; fill(); } }, '');
   const head = ['Date', 'Name', 'Sport', `Distance (${distanceUnit(u)})`, 'Time', `Elev (${elevationUnit(u)})`, 'Avg HR', 'Avg W', ...(hz ?? []).map((z) => `${z.name} min`)];
-  const rows = shown.map((a) => {
-    const z = hz ? activityZones(a, 'hr', hz) : null;
-    return [dateOf(a.startMs), a.name, a.sport, dist(a.distanceM), formatDuration(a.movingS), elev(a.elevGainM), opt(a.avgHr), opt(a.avgPower), ...(hz ?? []).map((_, i) => (z ? fmt(z[i]! / 60, 0) : dash))];
-  });
-  const sec = h('div', {}, h('h2', { id: 'activities' }, 'Activities'), h('div', { class: 'card scroll' }, table(head, rows, { numFrom: 3 })));
-  if (sorted.length > shown.length) sec.append(h('p', {}, h('button', { onclick: () => { state.showAll = true; render(); } }, `Show all ${sorted.length}`)));
-  return sec;
+  // Only the table is rebuilt while typing, so the search box keeps focus and caret.
+  const fill = () => {
+    const q = state.query.trim().toLowerCase();
+    const key = SORTS[state.sortKey][1];
+    const matches = acts
+      .filter((a) => !q || `${a.name} ${a.sport} ${dateOf(a.startMs)}`.toLowerCase().includes(q))
+      .sort((a, b) => key(b) - key(a));
+    const shown = state.showAll ? matches : matches.slice(0, 100);
+    const rows = shown.map((a) => {
+      const z = hz ? activityZones(a, 'hr', hz) : null;
+      return [dateOf(a.startMs), h('button', { class: 'link name', title: a.name, onclick: () => openActivity(a.id) }, a.name), a.sport, dist(a.distanceM), formatDuration(a.movingS), elev(a.elevGainM), opt(a.avgHr), opt(a.avgPower), ...(hz ?? []).map((_, i) => (z ? fmt(z[i]! / 60, 0) : dash))];
+    });
+    holder.replaceChildren(rows.length ? table(head, rows, { numFrom: 3 }) : h('p', {}, 'No activities match your search.'));
+    status.textContent = `Showing ${shown.length} of ${matches.length}${q ? ' matching' : ''} activities. Select a name to see its details.`;
+    moreBtn.textContent = `Show all ${matches.length}`;
+    moreBtn.hidden = shown.length >= matches.length;
+  };
+  fill();
+  const search = h('input', { type: 'search', id: 'activity-search', placeholder: 'Search name, sport or date', value: state.query, 'aria-label': 'Search activities', oninput: (e) => { state.query = (e.target as HTMLInputElement).value; state.showAll = false; fill(); } });
+  const sort = h('label', {}, 'Sort by', h('select', { onchange: (e) => { state.sortKey = (e.target as HTMLSelectElement).value as State['sortKey']; fill(); } },
+    ...(Object.entries(SORTS) as [State['sortKey'], [string, unknown]][]).map(([k, [t]]) => h('option', { value: k, selected: k === state.sortKey }, t))));
+  return h('div', {}, h('h2', { id: 'activities' }, 'Activities'), h('div', { class: 'row card controls' }, search, sort), status, holder, h('p', {}, moreBtn));
 }
+
+// ---------- single activity ----------
+
+function openActivity(id: string): void {
+  if (state.view !== 'activity') {
+    state.returnView = state.view === 'posters' ? 'posters' : 'stats';
+    state.returnScroll = window.scrollY;
+  }
+  state.activityId = id;
+  state.view = 'activity';
+  state.sheet = false;
+  animate = true;
+  const depth = ((history.state as { depth?: number } | null)?.depth ?? 0) + 1; // activity entries stacked on the stats page
+  history.pushState({ activity: id, depth }, '', '#activity');
+  render();
+  window.scrollTo(0, 0);
+}
+
+function closeActivity(fromHistory = false): void {
+  if (state.view !== 'activity') return;
+  const depth = (history.state as { depth?: number } | null)?.depth ?? 0;
+  if (!fromHistory && depth > 0) { history.go(-depth); return; } // popstate handler finishes the job
+  state.view = state.returnView;
+  animate = true;
+  render();
+  window.scrollTo(0, state.returnScroll);
+}
+
+window.addEventListener('popstate', (e) => {
+  const id = (e.state as { activity?: string } | null)?.activity;
+  if (id && state.result) {
+    if (state.view !== 'activity') { state.returnView = state.view === 'posters' ? 'posters' : 'stats'; state.returnScroll = window.scrollY; }
+    state.activityId = id;
+    state.view = 'activity';
+    animate = true;
+    render();
+    window.scrollTo(0, 0);
+  } else if (state.view === 'activity') closeActivity(true);
+});
 
 // ---------- export / issues ----------
 
@@ -486,5 +575,12 @@ function issuesSection(r: ImportResult): HTMLElement {
   if (r.warnings.length) sec.append(h('details', {}, h('summary', {}, `${r.warnings.length} activities without track data (summary numbers from the CSV are still counted)`), list(r.warnings)));
   return sec;
 }
+
+// A file dropped outside the drop zone must not navigate the tab away to the file.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  if (!worker && !state.result && e.dataTransfer && !(e.target as Element | null)?.closest?.('.drop')) importFiles(await fromDrop(e.dataTransfer));
+});
 
 renderImport();

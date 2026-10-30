@@ -29,12 +29,13 @@ export function svg(tag: string, attrs: Record<string, string | number> = {}, ..
   return el;
 }
 
-export function table(head: string[], rows: Child[][], opts: { numFrom?: number; caption?: string } = {}): HTMLTableElement {
+export function table(head: string[], rows: Child[][], opts: { numFrom?: number; numCols?: number[]; caption?: string } = {}): HTMLTableElement {
   const numFrom = opts.numFrom ?? 1;
+  const isNum = (i: number) => (opts.numCols ? opts.numCols.includes(i) : i >= numFrom);
   return h('table', {},
     opts.caption ? h('caption', {}, opts.caption) : null,
-    h('thead', {}, h('tr', {}, ...head.map((t, i) => h('th', { scope: 'col', class: i >= numFrom ? 'num' : '' }, t)))),
-    h('tbody', {}, ...rows.map((r) => h('tr', {}, ...r.map((c, i) => h('td', { class: i >= numFrom ? 'num' : '' }, c))))),
+    h('thead', {}, h('tr', {}, ...head.map((t, i) => h('th', { scope: 'col', class: isNum(i) ? 'num' : '' }, t)))),
+    h('tbody', {}, ...rows.map((r) => h('tr', {}, ...r.map((c, i) => h('td', { class: isNum(i) ? 'num' : '' }, c))))),
   );
 }
 

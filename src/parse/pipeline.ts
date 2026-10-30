@@ -58,6 +58,8 @@ function buildActivity(row: CsvActivity | null, tr: ParsedTrack | null, file: st
     powerHist: s?.powerHist ?? null,
     route: s?.route ?? null,
     profile: s?.profile ?? null,
+    series: s?.series ?? null,
+    splits: s?.splits ?? null,
     file,
   };
 }
@@ -68,9 +70,11 @@ export async function importExport(files: VFile[], onProgress: Progress = () => 
   const notes: string[] = [];
   const activities: Activity[] = [];
 
-  const csvFile = files
-    .filter((f) => /(^|\/)activities\.csv$/i.test(f.path))
-    .sort((a, b) => a.path.length - b.path.length)[0];
+  const csvs = files.filter((f) => /\.csv$/i.test(f.path));
+  // Prefer the stock name; otherwise accept a lone CSV (e.g. a browser-renamed "activities (1).csv").
+  const csvFile =
+    csvs.filter((f) => /(^|\/)activities\.csv$/i.test(f.path)).sort((a, b) => a.path.length - b.path.length)[0] ??
+    (csvs.length === 1 ? csvs[0] : undefined);
   const trackFiles = files.filter((f) => /\.(fit|gpx|tcx)(\.gz)?$/i.test(f.path));
 
   // Lookup by full path suffix and by basename.
