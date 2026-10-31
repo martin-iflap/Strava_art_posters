@@ -89,6 +89,12 @@ TSS, NP, IF, decoupling and the zones are in the activities CSV export too.
 | **Power fingerprint poster** | – | Each year's best power curve wound around a centre on a log time scale, every ride faint behind |
 | **Sunrise clock poster** | – | Each activity an arc on a 24-hour dial, one ring per day, over sunrise-to-sunset at your usual start |
 
+## Added in the fifth round
+
+| Feature | Where others have it | Here |
+| --- | --- | --- |
+| **Sport Wrapped** | Strava's Year in Sport (paid, once a year) | Any year or all time, any time: 14 animated cards and a shareable 1080 × 1920 picture, all made in the browser |
+
 ## Still missing: possible next steps
 
 ✅ = possible with export data, ⚠️ = needs input from the user, ❌ = not in the export.
@@ -98,8 +104,7 @@ TSS, NP, IF, decoupling and the zones are in the activities CSV export too.
 3. ✅ **Interval detection** (work/rest blocks from the power or pace stream, for files without laps; device laps are read already).
 4. ✅ **Segment-like climbs**: detect named-less climbs (length, gradient, VAM) and rank repeats of them.
 5. ✅ **Garmin activity names**: the Garmin export's `summarizedActivities` JSON has names and could be matched to the FIT files by start time.
-6. ✅ **Sport Wrapped**: a year-in-review story; see [sport-wrapped-plan.md](sport-wrapped-plan.md).
-7. ❌ Segments and leaderboards, planned workouts and compliance, HRV, sleep and wellness, VO2max and training-effect estimates from the device: none of this is in the export, or it needs Strava's servers.
+6. ❌ Segments and leaderboards, planned workouts and compliance, HRV, sleep and wellness, VO2max and training-effect estimates from the device: none of this is in the export, or it needs Strava's servers.
 
 ## How the numbers are worked out (and how close they are to TrainingPeaks)
 

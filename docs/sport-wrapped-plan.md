@@ -2,7 +2,8 @@
 
 A year-in-review story in the style of Spotify Wrapped. You pick a year, or all time, and get a full-screen
 sequence of animated cards, one number per card, ending in a summary card you can download and share.
-Not built yet; this is how it could be done.
+**Built** (in `src/wrapped/`); this was the plan, kept for the reasoning. Differences from it: the button sits on the
+stats page and in the sidebar, and the summary picture is PNG only.
 
 ## Is it too complicated?
 

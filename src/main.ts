@@ -23,6 +23,8 @@ import { dayNumber, fromDayNumber, isoWeekKey, monthKey, parts, weekStart, ymd }
 import { DEFAULT_POSTER, POSTER_TYPES, SIZES, THEMES, renderPoster, type PosterOptions, type PosterType } from './posters';
 import { IMAGE_KINDS, svgToImage, type ImageKind } from './posters/raster';
 import { EXAMPLE_POSTERS } from './examples';
+import { openWrapped } from './wrapped/player';
+import { wrappedYears } from './wrapped/data';
 import { strToU8, zipSync } from 'fflate';
 import type { WorkerIn, WorkerOut } from './worker';
 
@@ -349,6 +351,7 @@ function renderNow(): void {
     h('div', { class: 'brand side-top' }, h('div', {}, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
       h('button', { class: 'side-hide', 'aria-label': 'Hide the sidebar', 'aria-controls': 'sidebar', 'aria-expanded': 'true', title: 'Hide the sidebar for more room', onclick: toggleSide }, '«')),
     h('nav', { class: 'nav', 'aria-label': 'Views' }, navBtn('stats', 'Stats'), navBtn('posters', 'Posters', String(POSTER_TYPES.length)),
+      all.length ? h('button', { class: 'nav-wrapped', onclick: () => startWrapped(acts) }, 'Sport Wrapped ✦') : null,
       ...(state.view === 'stats' && all.length ? sections.map(([id, t]) => h('a', { href: `#${id}` }, t)) : [])),
     h('div', { class: 'filters', role: 'group', 'aria-label': 'Filters', id: 'filters' },
       selectControl('Sport', state.sport, [['all', `All sports (${all.length})`], ...sportsOf(all).map((s): [string, string] => [s, `${s} (${all.filter((a) => a.sport === s).length})`])], (v) => (state.sport = v)),
@@ -406,7 +409,7 @@ function renderNow(): void {
     return;
   }
 
-  if (acts.length) main.append(posterPromo(acts, () => setView('posters')));
+  if (acts.length) main.append(wrappedPromo(acts), posterPromo(acts, () => setView('posters')));
   main.append(h('h2', { id: 'overview' }, 'Overview'));
   if (!acts.length) {
     main.append(h('div', { class: 'card empty' }, h('h2', {}, 'Nothing here'), h('p', {}, 'There are no activities for this sport. Pick another sport in the filters.')));
@@ -1308,6 +1311,20 @@ function regionControl(t: PosterType, acts: Activity[], choice: RegionChoice, se
 }
 
 /** Banner at the top of the stats page: the posters are the point of the app, so show some. */
+// ---------- Sport Wrapped ----------
+
+function startWrapped(acts: Activity[], period?: number | 'all'): void {
+  openWrapped({ all: acts.length ? acts : state.result?.activities ?? [], tz: state.tz, units: state.units, thresholds: thresholds(), hideEnds: poster.hideEnds, period });
+}
+
+function wrappedPromo(acts: Activity[]): HTMLElement {
+  const latest = wrappedYears(acts, state.tz)[0];
+  return h('section', { class: 'wrapped-promo', 'aria-labelledby': 'wrapped-title' },
+    h('div', {}, h('h2', { id: 'wrapped-title' }, 'Sport Wrapped'),
+      h('p', {}, `Your ${latest ?? 'year'} as a story: distance, climbing, records, your rhythm and your sporting type${state.sport === 'all' ? '' : ` (${state.sport} only)`}.`)),
+    h('button', { id: 'open-wrapped', onclick: () => startWrapped(acts) }, 'Play your year ▶'));
+}
+
 function posterPromo(acts: Activity[], open: () => void): HTMLElement {
   const picks: PosterType[] = ['overlay', 'climb', 'world'];
   const size = SIZES.find((s) => s.id === poster.size) ?? SIZES[0]!;

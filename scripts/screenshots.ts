@@ -311,6 +311,38 @@ async function main(): Promise<void> {
     await pp.waitForSelector('#export', { timeout: 60_000 });
     await pp.waitForFunction(() => Array.from(document.querySelectorAll('.promo img')).every((i) => (i as HTMLImageElement).src && (i as HTMLImageElement).complete));
     await shoot(pp, 'stats-promo', false);
+    // Sport Wrapped: pick a year, step through every card with the keyboard, save the picture, close.
+    await pp.click('#open-wrapped');
+    await pp.waitForSelector('.w-year');
+    await a11y(pp, 'wrapped-picker');
+    await shoot(pp, 'wrapped-picker', false);
+    await pp.click('.w-year');
+    const wcards = await pp.locator('.w-prog').count();
+    if (wcards < 10) problems.push(`wrapped: only ${wcards} cards on the demo data`);
+    for (let i = 0; i < wcards; i++) {
+      if (!(await pp.textContent('#w-live'))?.startsWith(`Card ${i + 1} of`)) problems.push(`wrapped: card ${i + 1} not announced`);
+      if (i === 2) await a11y(pp, 'wrapped-card');
+      if (i === 0 || i === 5 || i === wcards - 1) await shoot(pp, `wrapped-${i + 1}`, false);
+      await pp.keyboard.press('ArrowRight');
+    }
+    const [wdl] = await Promise.all([pp.waitForEvent('download'), pp.click('#w-save')]);
+    const wpath = await wdl.path();
+    if (!wpath || statSync(wpath).size < 20_000) problems.push('wrapped: saved picture missing or too small');
+    await pp.keyboard.press('ArrowLeft');
+    if (!(await pp.textContent('#w-live'))?.startsWith(`Card ${wcards - 1} of`)) problems.push('wrapped: ArrowLeft did not go back');
+    await pp.keyboard.press('Escape');
+    await pp.waitForTimeout(200);
+    if (await pp.locator('dialog.wrapped').count()) problems.push('wrapped: Escape did not close');
+    if ((await pp.evaluate(() => document.activeElement?.id)) !== 'open-wrapped') problems.push('wrapped: focus not returned');
+    // Auto-advance: the first card moves on by itself after its progress bar fills.
+    await pp.click('#open-wrapped');
+    await pp.click('.w-year');
+    await pp.waitForTimeout(6_600);
+    if (!(await pp.textContent('#w-live'))?.startsWith('Card 2 of')) problems.push('wrapped: did not advance by itself');
+    await pp.goBack(); // Back closes it too
+    await pp.waitForTimeout(200);
+    if (await pp.locator('dialog.wrapped').count()) problems.push('wrapped: Back did not close');
+    if (!(await pp.locator('#export').count())) problems.push('wrapped: Back left the stats page');
     await pp.click('#open-posters'); // the banner on the stats page leads to the gallery
     await pp.waitForSelector('.gallery');
     const cards = await pp.locator('.pcard').count();
