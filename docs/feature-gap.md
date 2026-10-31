@@ -93,7 +93,7 @@ TSS, NP, IF, decoupling and the zones are in the activities CSV export too.
 
 | Feature | Where others have it | Here |
 | --- | --- | --- |
-| **Sport Wrapped** | Strava's Year in Sport (paid, once a year) | Any year or all time, any time: 14 animated cards and a shareable 1080 × 1920 picture, all made in the browser |
+| **Sport Wrapped** | Strava's Year in Sport (paid, once a year) | Any year or all time, any time: up to 17 cards, each a chart of your data (three of them funny), and a shareable 1080 × 1920 picture, all made in the browser |
 
 ## Still missing: possible next steps
 

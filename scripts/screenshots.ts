@@ -321,7 +321,7 @@ async function main(): Promise<void> {
     if (wcards < 10) problems.push(`wrapped: only ${wcards} cards on the demo data`);
     for (let i = 0; i < wcards; i++) {
       if (!(await pp.textContent('#w-live'))?.startsWith(`Card ${i + 1} of`)) problems.push(`wrapped: card ${i + 1} not announced`);
-      if (i === 2) await a11y(pp, 'wrapped-card');
+      if (i === 2) { await pp.waitForTimeout(1500); await a11y(pp, 'wrapped-card'); } // after the card's fade-in
       if (i === 0 || i === 5 || i === wcards - 1) await shoot(pp, `wrapped-${i + 1}`, false);
       await pp.keyboard.press('ArrowRight');
     }

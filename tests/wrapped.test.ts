@@ -5,7 +5,8 @@ import { importExport } from '../src/parse/pipeline';
 import { summarize } from '../src/stats/summary';
 import type { Activity } from '../src/types';
 import { parts } from '../src/util/time';
-import { archetype, distanceEquivalent, personalRecords, wrappedStats, wrappedYears } from '../src/wrapped/data';
+import { archetype, clockQuip, distanceEquivalent, gapQuip, nameQuip, personalRecords, wrappedSeason, wrappedStats, wrappedYears } from '../src/wrapped/data';
+import { heatYear, cumulative } from '../src/wrapped/charts';
 import { shareSvg } from '../src/wrapped/share';
 import { act, utc } from './helpers';
 
@@ -75,6 +76,41 @@ describe('Sport Wrapped', () => {
     expect(distanceEquivalent(6_000_000)).toMatch(/^further than London to New York, 15 %/);
     expect(distanceEquivalent(90_000_000)).toBe('2.2 times around the Earth');
     expect(distanceEquivalent(10_000)).toBe('a good start');
+  });
+
+  it('the banner shows from 15 December to 15 January, for the year ending', () => {
+    expect(wrappedSeason(new Date(2025, 11, 14))).toBeNull();
+    expect(wrappedSeason(new Date(2025, 11, 15))).toBe(2025);
+    expect(wrappedSeason(new Date(2026, 0, 15))).toBe(2025);
+    expect(wrappedSeason(new Date(2026, 0, 16))).toBeNull();
+    expect(wrappedSeason(new Date(2026, 6, 1))).toBeNull();
+  });
+
+  it('funny cards: earliest and latest start, longest break, names', async () => {
+    const a = await load();
+    const y = wrappedYears(a, 'UTC')[0]!;
+    const w = wrappedStats(a, y, opts);
+    expect(w.cards).toEqual(expect.arrayContaining(['clock', 'gap', 'names']));
+    expect(w.earliest!.hour).toBeLessThanOrEqual(w.latest!.hour < 3 ? 24 : w.latest!.hour);
+    expect(w.gap!.days).toBeGreaterThan(0);
+    // the break really is empty and bounded by active days
+    const at = w.gap!.d0 - w.day0;
+    expect(w.daily.slice(at, at + w.gap!.days).every((d) => d.s === 0 && d.m === 0)).toBe(true);
+    expect(w.daily[at - 1]!.s + w.daily[at - 1]!.m).toBeGreaterThan(0);
+    expect(clockQuip(6, 23.5)).toMatch(/Midnight/);
+    expect(clockQuip(9, 17)).toMatch(/Office hours/);
+    expect(clockQuip(6, 1)).toMatch(/Midnight/); // 1 am is late, not early
+    expect(gapQuip(2)).toMatch(/legs/);
+    expect(nameQuip({ name: 'Morning Ride', n: 40 }, 100, 0.1)).toBe('“Morning Ride” 40 times. Creative.');
+  });
+
+  it('charts are well-formed SVG without NaN', async () => {
+    const a = await load();
+    const w = wrappedStats(a, wrappedYears(a, 'UTC')[0]!, opts);
+    for (const s of [heatYear(w.daily.map((d) => d.s), w.day0), cumulative([0, 1, 3], { ticks: [{ at: 0, label: 'J' }], end: '3 km' })]) {
+      expect(s.startsWith('<svg ')).toBe(true);
+      expect(s).not.toMatch(/NaN|undefined|Infinity/);
+    }
   });
 
   it('share image is a well-formed 1080 × 1920 SVG', async () => {

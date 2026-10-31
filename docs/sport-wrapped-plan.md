@@ -2,8 +2,10 @@
 
 A year-in-review story in the style of Spotify Wrapped. You pick a year, or all time, and get a full-screen
 sequence of animated cards, one number per card, ending in a summary card you can download and share.
-**Built** (in `src/wrapped/`); this was the plan, kept for the reasoning. Differences from it: the button sits on the
-stats page and in the sidebar, and the summary picture is PNG only.
+**Built** (in `src/wrapped/`); this was the plan, kept for the reasoning. Differences from it: the banner on the stats page shows only from
+15 December to 15 January (otherwise Wrapped is under Records and in the sidebar); every card carries a chart and
+the look follows the app's dark theme with one accent colour; three light-hearted cards were added (earliest and
+latest start, longest break, activity names); the summary picture is PNG only.
 
 ## Is it too complicated?
 

@@ -1,4 +1,7 @@
-import { download, h } from '../dom';
+import { download, h, svg } from '../dom';
+import { summarize } from '../stats/summary';
+import { parts } from '../util/time';
+import { distance, distanceUnit } from '../util/units';
 import type { Activity, Tz, Units } from '../types';
 import type { Thresholds } from '../stats/training';
 import { svgToImage } from '../posters/raster';
@@ -28,6 +31,12 @@ export const CARD_SECONDS = 6;
 const reduced = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 let autoPref: boolean | null = null; // the viewer's choice for this page visit
 
+const PAUSE = 'M8,5H10.5V19H8ZM13.5,5H16V19H13.5Z';
+const PLAY = 'M8,5L19,12L8,19Z';
+/** A 24 × 24 line (or filled) icon. */
+const icon = (d: string, filled = false) => svg('svg', { viewBox: '0 0 24 24', width: 20, height: 20, 'aria-hidden': 'true' },
+  svg('path', filled ? { d, fill: 'currentColor' } : { d, fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+
 export function openWrapped(o: WrappedOpen): void {
   const opener = document.activeElement as HTMLElement | null;
   const dlg = h('dialog', { class: 'wrapped', 'aria-labelledby': 'w-heading' });
@@ -37,21 +46,26 @@ export function openWrapped(o: WrappedOpen): void {
   let countJob = 0;
 
   const close = () => { if ((history.state as { wrapped?: boolean } | null)?.wrapped) history.back(); else teardown?.(); };
-  const closeBtn = () => h('button', { class: 'w-close', 'aria-label': 'Close Sport Wrapped', onclick: close }, '✕');
+  const closeBtn = () => h('button', { class: 'w-close w-icon', 'aria-label': 'Close Sport Wrapped', onclick: close }, icon('M6,6L18,18M18,6L6,18'));
 
   /** Year (or all time) picker. */
   const picker = () => {
     stopStory();
-    dlg.className = 'wrapped w-bg-0';
+    dlg.className = 'wrapped';
     const years = wrappedYears(o.all, o.tz);
+    const u = distanceUnit(o.units);
+    const sub = (p: WrappedPeriod) => {
+      const s = summarize(p === 'all' ? o.all : o.all.filter((a) => parts(a.startMs, o.tz).y === p));
+      return `${Math.round(distance(s.distanceM, o.units)).toLocaleString('en-US')} ${u} · ${s.count.toLocaleString('en-US')} activities`;
+    };
     // Under reduced motion the progress bars do not animate, and so cannot time the cards: move by hand.
     const auto = h('input', { type: 'checkbox', id: 'w-auto', checked: !reduced() && (autoPref ?? true), disabled: reduced(), onchange: (e) => { autoPref = (e.target as HTMLInputElement).checked; } });
-    const btn = (p: WrappedPeriod, label: string) => h('button', { class: 'w-year', 'data-period': String(p), onclick: () => play(p) }, label);
+    const btn = (p: WrappedPeriod, label: string) => h('button', { class: 'w-year', 'data-period': String(p), onclick: () => play(p) }, h('b', {}, label), h('span', {}, sub(p)));
     dlg.replaceChildren(
       h('div', { class: 'w-pick' }, closeBtn(),
         h('p', { class: 'w-kicker' }, 'Sport Wrapped'),
-        h('h2', { class: 'w-title', id: 'w-heading' }, 'Your year,', h('br'), h('em', {}, 'wrapped')),
-        h('p', { class: 'w-line' }, 'Pick a year for your story. Everything is worked out here in your browser.'),
+        h('h2', { class: 'w-title', id: 'w-heading' }, 'Your year in sport'),
+        h('p', { class: 'w-line' }, 'Pick a year. The story is worked out here in your browser from your own files.'),
         h('div', { class: 'w-years' }, ...years.map((y) => btn(y, String(y))), years.length > 1 ? btn('all', 'All time') : null),
         h('label', { class: 'w-check' }, auto, reduced() ? 'Cards move on when you tap (your device asks for reduced motion)' : 'Move on to the next card by itself')),
       live);
@@ -67,7 +81,7 @@ export function openWrapped(o: WrappedOpen): void {
     if (!story) return;
     story.paused = p;
     dlg.classList.toggle('paused', p);
-    story.pauseBtn.textContent = p ? '▶' : '❚❚';
+    story.pauseBtn.replaceChildren(icon(p ? PLAY : PAUSE, true));
     story.pauseBtn.setAttribute('aria-label', p ? 'Play' : 'Pause');
   };
 
@@ -78,7 +92,7 @@ export function openWrapped(o: WrappedOpen): void {
     const auto = !reduced() && ((document.getElementById('w-auto') as HTMLInputElement | null)?.checked ?? autoPref ?? true);
     const bars = cards.map(() => h('span', { class: 'w-prog' }, h('i')));
     const stage = h('div', { class: 'w-stage', role: 'group', 'aria-roledescription': 'card' });
-    const pauseBtn = h('button', { class: 'w-pause', 'aria-label': 'Pause', onclick: () => setPaused(!story?.paused) }, '❚❚');
+    const pauseBtn = h('button', { class: 'w-pause w-icon', 'aria-label': 'Pause', onclick: () => setPaused(!story?.paused) }, icon(PAUSE, true));
     story = { w, cards, i: 0, bars, stage, pauseBtn, auto, paused: false };
     dlg.replaceChildren(
       h('div', { class: 'w-top' }, h('div', { class: 'w-progs', 'aria-hidden': 'true' }, ...bars),
@@ -86,8 +100,8 @@ export function openWrapped(o: WrappedOpen): void {
           auto ? pauseBtn : null, closeBtn())),
       stage,
       h('div', { class: 'w-navs' },
-        h('button', { class: 'w-prev', 'aria-label': 'Previous card', onclick: () => go(-1) }, '‹'),
-        h('button', { class: 'w-next', 'aria-label': 'Next card', onclick: () => go(1) }, '›')),
+        h('button', { class: 'w-prev w-icon', 'aria-label': 'Previous card', onclick: () => go(-1) }, icon('M15,5L8,12L15,19')),
+        h('button', { class: 'w-next w-icon', 'aria-label': 'Next card', onclick: () => go(1) }, icon('M9,5L16,12L9,19'))),
       live);
     bindStage(stage);
     show(0);
@@ -108,7 +122,7 @@ export function openWrapped(o: WrappedOpen): void {
     s.i = i;
     const card = s.cards[i]!;
     const last = i === s.cards.length - 1;
-    dlg.className = `wrapped w-bg-${i % 7}${s.paused ? ' paused' : ''}`;
+    dlg.className = `wrapped${s.paused ? ' paused' : ''}`;
     s.bars.forEach((b, k) => {
       b.className = `w-prog${k < i ? ' done' : k === i ? (s.auto && !last ? ' run' : ' done') : ''}`;
       // restart the fill animation for the current bar
