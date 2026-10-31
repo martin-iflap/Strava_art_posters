@@ -101,8 +101,8 @@ export function byPeriod(acts: Activity[], period: Period, tz: Tz): PeriodRow[] 
     const k = keyOf(a.startMs);
     (groups.get(k) ?? groups.set(k, []).get(k)!).push(a);
   }
-  const first = parts(Math.min(...acts.map((a) => a.startMs)), tz);
-  const last = parts(Math.max(...acts.map((a) => a.startMs)), tz);
+  const first = parts(acts.reduce((m, a) => Math.min(m, a.startMs), Infinity), tz);
+  const last = parts(acts.reduce((m, a) => Math.max(m, a.startMs), -Infinity), tz);
   const rows: PeriodRow[] = [];
   const push = (key: string, start: string) => rows.push({ key, start, summary: summarize(groups.get(key) ?? []) });
   if (period === 'year') {

@@ -31,6 +31,10 @@ export function decodeEntities(s: string): string {
   return s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+    .replace(/&#(\d+);/g, (_, d: string) => codePoint(parseInt(d, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, x: string) => codePoint(parseInt(x, 16)))
     .replace(/&amp;/g, '&');
 }
+
+/** A numeric character reference; out-of-range or control values (a hostile file) become U+FFFD instead of throwing. */
+const codePoint = (n: number) => (Number.isFinite(n) && n >= 0x20 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : n === 9 || n === 10 || n === 13 ? String.fromCharCode(n) : '\ufffd');

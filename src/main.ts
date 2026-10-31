@@ -126,7 +126,7 @@ function startImport(msg: WorkerIn): void {
       renderImport(m.message);
     }
   };
-  worker.onerror = (e) => renderImport(`Import failed: ${e.message}`);
+  worker.onerror = (e) => { worker?.terminate(); worker = null; renderImport(`Import failed: ${e.message || 'the file could not be read'}`); };
   worker.postMessage(msg);
 }
 
@@ -208,6 +208,23 @@ function renderImport(error?: string): void {
 /** Link to the owner's sister app (generates realistic activity files for rides that were not recorded). */
 const gpxToFitLink = (text: string) => h('a', { href: 'https://gpx-to-fit.pages.dev', target: '_blank', rel: 'noopener noreferrer' }, text);
 
+/** Drop the loaded export and everything derived from it (rendered posters, route groups, search), so nothing lingers in memory. */
+function forgetData(): void {
+  state.result = null;
+  state.sheet = false;
+  state.pick = null;
+  state.activityId = null;
+  state.query = '';
+  ++posterJob; // cancel pending poster renders
+  for (const v of posterCache.values()) URL.revokeObjectURL(v.r.url);
+  posterCache.clear();
+  clusterCache.clear();
+  regionCache.clear();
+  posterOwner = clusterOwner = regionOwner = null;
+  history.replaceState(null, '', location.pathname + location.search);
+  renderImport();
+}
+
 // ---------- formatting ----------
 
 const dist = (m: number) => fmt(distance(m, state.units));
@@ -278,13 +295,13 @@ function renderNow(): void {
       h('button', { class: 'sheet-close', onclick: () => { state.sheet = false; render(); } }, 'Done')),
     h('div', { class: 'side-foot' }, themeToggle(),
       h('p', { class: 'sibling small' }, 'Forgot to record one? ', gpxToFitLink('GPX to FIT'), ' makes a realistic file.'),
-      h('button', { class: 'load', onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'Load another export')));
+      h('button', { class: 'load', onclick: forgetData }, 'Load another export')));
 
   const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Main tabs' },
     h('button', { 'aria-current': state.view !== 'posters' ? 'page' : undefined, onclick: () => setView('stats') }, 'Stats'),
     h('button', { 'aria-current': state.view === 'posters' ? 'page' : undefined, onclick: () => setView('posters') }, 'Posters'),
     h('button', { 'aria-expanded': String(state.sheet), 'aria-controls': 'filters', onclick: () => { state.sheet = !state.sheet; render(); } }, 'Filters'),
-    h('button', { onclick: () => { state.result = null; state.sheet = false; renderImport(); } }, 'New'));
+    h('button', { onclick: forgetData }, 'New'));
 
   const main = h('main', { id: 'main', class: animate ? 'content enter' : 'content', tabindex: -1 });
   animate = false;
@@ -377,8 +394,8 @@ function yearTabs(acts: Activity[], label: string): HTMLElement {
 
 function statGrid(s: Summary, acts: Activity[]): HTMLElement {
   const u = state.units;
-  const first = Math.min(...acts.map((a) => a.startMs));
-  const last = Math.max(...acts.map((a) => a.startMs));
+  const first = acts.reduce((m, a) => Math.min(m, a.startMs), Infinity);
+  const last = acts.reduce((m, a) => Math.max(m, a.startMs), -Infinity);
   const stat = (v: string, l: string) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l));
   return h('div', { class: 'grid' },
     stat(String(s.count), `activities (${dateOf(first)} → ${dateOf(last)})`),

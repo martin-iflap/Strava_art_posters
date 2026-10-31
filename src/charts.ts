@@ -44,7 +44,9 @@ export function sampleAt(vs: number[], t: number): number {
 
 /** Simple responsive line/area chart as SVG. Colours come from CSS classes (theme aware). */
 export function lineChart(o: LineChartOptions): SVGElement {
-  const W = 640, H = 170, L = 52, R = 10, T = 10, B = 26;
+  // On a phone the chart is ~330 px wide: a narrower drawing keeps its labels readable instead of shrinking them by half.
+  const narrow = typeof innerWidth === 'number' && innerWidth < 600;
+  const W = narrow ? 380 : 640, H = narrow ? 160 : 170, L = narrow ? 44 : 52, R = 10, T = 10, B = 26;
   const vs = o.values;
   let lo = Math.min(...vs), hi = Math.max(...vs);
   if (o.zeroBased) lo = Math.min(0, lo);
@@ -52,7 +54,7 @@ export function lineChart(o: LineChartOptions): SVGElement {
   const pad = (hi - lo) * 0.06;
   if (!o.zeroBased) lo -= pad;
   hi += pad;
-  const X = (i: number) => L + (i / (vs.length - 1)) * (W - L - R);
+  const X = (i: number) => L + (i / Math.max(1, vs.length - 1)) * (W - L - R);
   const Y = (v: number) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
   const els: SVGElement[] = [];
   for (const t of [0, 0.5, 1]) {
@@ -60,7 +62,7 @@ export function lineChart(o: LineChartOptions): SVGElement {
     els.push(svg('line', { class: 'gridline', x1: L, x2: W - R, y1: f1(Y(v)), y2: f1(Y(v)) }));
     els.push(Object.assign(svg('text', { class: 'tick', x: L - 6, y: f1(Y(v) + 4), 'text-anchor': 'end' }), { textContent: o.fmtY(v) }));
   }
-  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+  for (const t of narrow ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1]) {
     els.push(Object.assign(svg('text', { class: 'tick', x: f1(L + t * (W - L - R)), y: H - 6, 'text-anchor': t === 0 ? 'start' : t === 1 ? 'end' : 'middle' }), { textContent: `${f1(o.xMax * t)}${t === 1 ? ' ' + o.xUnit : ''}` }));
   }
   const line = vs.map((v, i) => `${f1(X(i))},${f1(Y(v))}`).join('L');
@@ -99,7 +101,8 @@ export function lineChart(o: LineChartOptions): SVGElement {
   };
   el.addEventListener('pointermove', (e) => cursor.set(fromEvent(e)));
   el.addEventListener('pointerdown', (e) => cursor.set(fromEvent(e)));
-  el.addEventListener('pointerleave', () => cursor.set(null));
+  // A finger lifting also 'leaves': keep a tapped readout until the next tap, or until focus moves away.
+  el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') cursor.set(null); });
   el.addEventListener('blur', () => cursor.set(null));
   el.addEventListener('keydown', (e) => {
     const step = e.shiftKey ? 0.1 : 0.01;

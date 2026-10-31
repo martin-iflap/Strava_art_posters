@@ -132,9 +132,8 @@ export function statsJson(acts: Activity[], o: ExportOptions): string {
 export function exportFilename(acts: Activity[], sport: string, what: string, ext: string, tz: Tz): string {
   const safe = (s: string) => s.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
   if (!acts.length) return `ride-atlas_${safe(sport)}_${what}.${ext}`;
-  const ms = acts.map((a) => a.startMs);
-  const from = ymd(parts(Math.min(...ms), tz));
-  const to = ymd(parts(Math.max(...ms), tz));
+  const from = ymd(parts(acts.reduce((m, a) => Math.min(m, a.startMs), Infinity), tz));
+  const to = ymd(parts(acts.reduce((m, a) => Math.max(m, a.startMs), -Infinity), tz));
   return `ride-atlas_${safe(sport)}_${from}_${to}_${what}.${ext}`;
 }
 

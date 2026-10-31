@@ -254,3 +254,10 @@ describe('privacy', () => {
     expect(points(renderPoster('overlay', a, opts({ hideEnds: 200 })).svg)).toBe(4);
   });
 });
+
+describe('esc', () => {
+  it('drops characters that would make the SVG invalid XML', async () => {
+    const { esc } = await import('../src/posters/common');
+    expect(esc('a\u0001b\u001fc<&"\ud800 é 😀')).toBe('abc&lt;&amp;&quot; é 😀');
+  });
+});

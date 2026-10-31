@@ -122,7 +122,7 @@ export async function expandInputs(inputs: RawInput[]): Promise<VFile[]> {
       }
       for (const e of entries) {
         const name = normPath(e.name);
-        if (name.endsWith('/') || !isWanted(name) || e.size > MAX_ENTRY_BYTES) continue;
+        if (name.endsWith('/') || !isWanted(name) || e.size > MAX_ENTRY_BYTES || e.compSize > MAX_ENTRY_BYTES) continue;
         out.push({ path: name, read: () => readEntry(read, e) });
       }
     } else if (isWanted(path)) {
