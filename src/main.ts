@@ -861,16 +861,33 @@ const dayLabel = (d: number) => { const p = fromDayNumber(d); return `${p.d} ${M
 /** Sport colours (categorical series tokens c0…c5), stable per sport across charts. */
 const sportClass = (sports: string[], sp: string) => `c${Math.max(0, sports.indexOf(sp)) % 6}`;
 
+/** Estimated FTP, critical power, W′ and W/kg from the power curves: shown under fitness and fatigue. */
+function powerTiles(acts: Activity[]): HTMLElement | null {
+  const withPower = acts.filter((a) => a.powerCurve);
+  if (!withPower.length) return null;
+  const recent = bestPowerCurve(lastYear(withPower));
+  const curve = recent.length ? recent : bestPowerCurve(withPower);
+  const est = estimateFtp(curve), cp = criticalPower(curve);
+  const tile = (v: string, l: string, help: string) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l), h('small', {}, help));
+  const tiles = [
+    est ? tile(`${est} W`, 'Estimated FTP', '95 % of your best 20 minutes (last 12 months).') : null,
+    cp ? tile(`${cp.cp} W`, 'Critical power (CP)', 'From your best 3 to 20 minute efforts: the power you could hold for a long time. Usually a little above FTP.') : null,
+    cp ? tile(`${fmt(cp.wPrime / 1000, 1)} kJ`, 'W′ (anaerobic capacity)', 'The energy you can spend above CP before you have to back off.') : null,
+    state.weight && (state.ftp || est) ? tile(`${fmt((state.ftp ?? est!) / state.weight, 2)} W/kg`, 'FTP per kilogram', 'What decides how fast you climb.') : null,
+  ].filter((x) => x);
+  return tiles.length ? h('div', { class: 'grid power-tiles' }, ...tiles) : null;
+}
+
 function trainingSection(all: Activity[], acts: Activity[]): HTMLElement {
   const sec = h('div', {}, h('div', { class: 'h2row' }, h('h2', { id: 'training' }, 'Training load')), thresholdForm(all));
   const t = thresholds();
   if (!t.ftp && !t.lthr && !t.pace) {
-    sec.append(h('p', {}, 'Set your FTP, heart rate or threshold pace above to see your training stress, fitness, fatigue and form.'));
+    sec.append(h('p', {}, 'Set your FTP, heart rate or threshold pace above to see your training stress, fitness, fatigue and form.'), powerTiles(acts) ?? '');
     return sec;
   }
   const load = trainingLoad(acts, t, state.tz);
   if (!load.days.length) {
-    sec.append(h('p', {}, 'None of these activities has power, pace or heart-rate data that can be scored, so there is no training stress to show.'));
+    sec.append(h('p', {}, 'None of these activities has power, pace or heart-rate data that can be scored, so there is no training stress to show.'), powerTiles(acts) ?? '');
     return sec;
   }
   const last = load.days[load.days.length - 1]!;
@@ -883,7 +900,8 @@ function trainingSection(all: Activity[], acts: Activity[]): HTMLElement {
       tile(fmt(last.ctl, 0), 'Fitness (CTL)', 'Your training stress per day, averaged over about 6 weeks. Goes up slowly as you train consistently.'),
       tile(fmt(last.atl, 0), 'Fatigue (ATL)', 'The same over about a week. Rises fast after hard days, falls fast with rest.'),
       tile(`${tomorrowForm > 0 ? '+' : ''}${fmt(tomorrowForm, 0)}`, 'Form (TSB)', fl.advice, fl.label),
-      ramp !== null ? tile(`${ramp > 0 ? '+' : ''}${fmt(ramp, 1)}`, 'Fitness change, last 7 days', 'Ramp rate. More than about +8 a week is hard to sustain.') : null));
+      ramp !== null ? tile(`${ramp > 0 ? '+' : ''}${fmt(ramp, 1)}`, 'Fitness change, last 7 days', 'Ramp rate. More than about +8 a week is hard to sustain.') : null),
+    powerTiles(acts) ?? '');
 
   // fitness by sport (each sport's own 42-day average), when more than one sport carries load
   const sports = sportsOf(acts);
@@ -1105,13 +1123,6 @@ function curveSection(acts: Activity[]): HTMLElement {
     sec.append(h('div', { class: 'card scroll' }, table(['Duration', `All time (${c.unit()})`, 'Set on', ...(showRecent ? [`Last 12 months (${c.unit()})`] : []), ...(wkg ? ['W/kg'] : []), ...(pctOf ? [kind === 'power' ? '% of FTP' : '% of threshold HR'] : [])],
       rows.map(({ d, a, r }) => [durationName(d), c.fmt(a!.watts), h('span', {}, actLink(a!.activityId), ` (${dateOf(a!.startMs)})`), ...(showRecent ? [r ? c.fmt(r.watts) : dash] : []), ...(wkg ? [fmt(a!.watts / state.weight!, 2)] : []), ...(pctOf ? [`${fmt((a!.watts / pctOf) * 100, 0)} %`] : [])]), { numCols: [1, 3, 4, 5] })));
     if (kind === 'power') {
-      const est = estimateFtp(recent.length ? recent : allTime);
-      const tile = (v: string, l: string, help: string) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l), h('small', {}, help));
-      sec.append(h('div', { class: 'grid' },
-        est ? tile(`${est} W`, 'estimated FTP', '95 % of your best 20 minutes (last 12 months).') : null,
-        cp ? tile(`${cp.cp} W`, 'critical power (CP)', 'From your best 3 to 20 minute efforts: the power you could hold for a long time. Usually a little above FTP.') : null,
-        cp ? tile(`${fmt(cp.wPrime / 1000, 1)} kJ`, 'W′ (anaerobic capacity)', 'The energy you can spend above CP before you have to back off.') : null,
-        state.weight && (state.ftp || est) ? tile(`${fmt((state.ftp ?? est!) / state.weight, 2)} W/kg`, 'FTP per kilogram', 'What decides how fast you climb.') : null));
       const peakD = [5, 60, 300, 1200, 3600];
       const peaks = peaksBy(subset, (a) => String(parts(a.startMs, state.tz).y), peakD);
       if (peaks.length > 1) {
@@ -1161,6 +1172,8 @@ function posterOpts(acts: Activity[]): PosterOptions {
   if (o.circleYear !== 'all' && !years.includes(o.circleYear)) o.circleYear = 'all';
   if (o.spaceYear !== 'all' && !years.includes(o.spaceYear)) o.spaceYear = 'all';
   if (o.bloomYear !== 'all' && !years.includes(o.bloomYear)) o.bloomYear = 'all';
+  if (o.workYear !== 'all' && !years.includes(o.workYear)) o.workYear = 'all';
+  if (o.clockYear !== 'all' && !years.includes(o.clockYear)) o.clockYear = 'all';
   if (o.facetYear !== 'all' && !years.includes(o.facetYear)) o.facetYear = 'all';
   if (o.overlayYear !== 'all' && !years.includes(o.overlayYear)) o.overlayYear = 'all';
   if (!o.todYear || !years.includes(o.todYear)) o.todYear = years[0] ?? null;
@@ -1226,6 +1239,8 @@ function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLElemen
       pick('Period', String(o.bloomYear), [['all', 'All time'], ...years], (v) => (poster.bloomYear = v === 'all' ? 'all' : Number(v))),
       pick('Symmetry', String(poster.bloomSymmetry), [['1', 'None'], ['3', '3-fold'], ['6', '6-fold'], ['8', '8-fold']], (v) => (poster.bloomSymmetry = Number(v)))];
     case 'calendar': case 'rings': case 'cumulative': case 'stream': case 'spiral': return [pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v))];
+    case 'work': return [pick('Period', String(o.workYear), [['all', 'All time'], ...years], (v) => (poster.workYear = v === 'all' ? 'all' : Number(v)))];
+    case 'sunrise': return [pick('Period', String(o.clockYear), [['all', 'All time'], ...years], (v) => (poster.clockYear = v === 'all' ? 'all' : Number(v)))];
     case 'circles': return [
       pick('Period', String(o.circleYear), [['all', 'All time'], ...years], (v) => (poster.circleYear = v === 'all' ? 'all' : Number(v))),
       pick('Clusters', poster.circleGroup, [['none', 'One pack'], ['year', 'One per year'], ['sport', 'One per sport']], (v) => (poster.circleGroup = v)),

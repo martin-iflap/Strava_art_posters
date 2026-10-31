@@ -99,7 +99,7 @@ describe('new posters', () => {
     act({ startMs: Date.UTC(2024, 5, 3, 18, 0), distanceM: 20_000, movingS: 3600, sport: 'Ride' }),
   ];
   const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
-  it('all nineteen posters are listed', () => expect(POSTER_TYPES).toHaveLength(19));
+  it('all twenty-two posters are listed', () => expect(POSTER_TYPES).toHaveLength(22));
   it('punch card has 168 slots and names the busiest one', () => {
     const p = renderPoster('punchcard', acts, opts());
     expect(count(p.svg, /<circle /g)).toBe(168);

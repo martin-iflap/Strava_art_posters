@@ -8,6 +8,7 @@ import { world } from './world';
 import { landscape, pickLabel, pickProfiles } from './landscape';
 import { space } from './space';
 import { bloom, spiral, strata, stream } from './art';
+import { fingerprint, sunriseClock, workDone, workKj } from './power';
 import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
 import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type Poster, type PosterOptions, type PosterType } from './common';
 
@@ -345,6 +346,23 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       const n = all.filter((a) => a.series?.hr && a.series.hr.length > 2).length;
       const f = makeFrame(all, o, 'Heart-rate strata', `${range} · ${n > 400 ? '400 of ' : ''}${n} activities with heart rate, oldest at the bottom · width is duration`, o.strip);
       return strata(all, o, f);
+    }
+    case 'work': {
+      const year = o.workYear;
+      const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const f = makeFrame(sel, o, 'Work done', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · ${sel.filter((a) => workKj(a) > 0).length} activities with power · energy in date order`, o.strip);
+      return workDone(sel, o, f);
+    }
+    case 'fingerprint': {
+      const n = all.filter((a) => a.powerCurve).length;
+      const f = makeFrame(all, o, 'Power fingerprint', `${range} · best power for every duration, ${n} activities · the bold lines are each year's best`, o.strip);
+      return fingerprint(all, o, f);
+    }
+    case 'sunrise': {
+      const year = o.clockYear;
+      const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const f = makeFrame(sel, o, 'Sunrise clock', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · every activity from start to finish on a 24-hour dial, first day in the middle (${o.tz === 'UTC' ? 'UTC' : 'local time'})`, o.strip);
+      return sunriseClock(sel, o, f);
     }
     case 'climb': {
       const mode = o.climbYear === 'all' || o.climbYear === 'overlay' ? o.climbYear : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();

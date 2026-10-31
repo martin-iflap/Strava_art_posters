@@ -4,7 +4,7 @@ import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
 
-export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space' | 'bloom' | 'stream' | 'spiral' | 'strata';
+export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space' | 'bloom' | 'stream' | 'spiral' | 'strata' | 'work' | 'fingerprint' | 'sunrise';
 export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'facets', name: 'Route facets' },
   { id: 'overlay', name: 'All routes' },
@@ -25,6 +25,9 @@ export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'stream', name: 'Stream of seasons' },
   { id: 'spiral', name: 'Year spiral' },
   { id: 'strata', name: 'Heart-rate strata' },
+  { id: 'work', name: 'Work done' },
+  { id: 'fingerprint', name: 'Power fingerprint' },
+  { id: 'sunrise', name: 'Sunrise clock' },
 ];
 
 export interface Theme { id: string; name: string; bg: string; fg: string; muted: string; accent: string }
@@ -88,12 +91,15 @@ export interface PosterOptions {
   /** period of the route bloom, and how many times each petal repeats around the centre */
   bloomYear: number | 'all';
   bloomSymmetry: number;
+  /** period of the work-done poster and of the sunrise clock */
+  workYear: number | 'all';
+  clockYear: number | 'all';
 }
 
 export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> = {
   theme: 'dark', size: 'a3', strip: true, hideEnds: 200, facetSort: 'date', facetYear: 'all', facetRegions: 'all', overlayYear: 'all', overlayRegions: 'auto', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
   circleColor: 'year', circleYear: 'all', circleGroup: 'none', todRows: 'year', punchMetric: 'count', climbYear: null, worldYear: 'all', todYear: null,
-  landSelect: 'recent', landCount: 50, landHeight: 'relative', spaceMetric: 'climb', spaceYear: 'all', bloomYear: 'all', bloomSymmetry: 1,
+  landSelect: 'recent', landCount: 50, landHeight: 'relative', spaceMetric: 'climb', spaceYear: 'all', bloomYear: 'all', bloomSymmetry: 1, workYear: 'all', clockYear: 'all',
 };
 
 export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

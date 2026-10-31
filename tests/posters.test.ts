@@ -6,6 +6,7 @@ import { expandInputs } from '../src/parse/archive';
 import { importExport } from '../src/parse/pipeline';
 import type { Activity } from '../src/types';
 import { act, utc } from './helpers';
+import { sunTimes, workEquivalents, workKj } from '../src/posters/power';
 
 const opts = (o: Partial<PosterOptions> = {}): PosterOptions => ({ ...DEFAULT_POSTER, units: 'metric', tz: 'UTC', sportLabel: 'All activities', ...o });
 let acts: Activity[];
@@ -282,5 +283,40 @@ describe('art posters', () => {
     expect(count(svg, /class="stratum"/g)).toBeGreaterThanOrEqual(3);
     expect(count(svg, /M[\d.]+ [\d.]+h/g)).toBeGreaterThanOrEqual(Math.min(400, withHr.length));
     expect(renderPoster('strata', a.map((x) => ({ ...x, series: null })), opts({ strip: false })).svg).toMatch(/No heart-rate data/);
+  });
+  it('work done fills squares for the total energy, and the equivalents are right', async () => {
+    const a = await load();
+    const total = a.reduce((s, x) => s + workKj(x), 0);
+    expect(total).toBeGreaterThan(0);
+    const svg = renderPoster('work', a, opts({ strip: false })).svg;
+    const unit = Number(/each square ([\d,]+) kJ/.exec(svg)![1]!.replace(/,/g, ''));
+    expect(count(svg, /<rect x=/g)).toBeGreaterThanOrEqual(Math.ceil(total / unit));
+    expect(workKj(act({ startMs: 0, powerHist: [[200, 3600]] }))).toBe(720);
+    expect(workKj(act({ startMs: 0, avgPower: 100, movingS: 1000 }))).toBe(100);
+    const eq = workEquivalents(3600);
+    expect(eq[3]!.value).toBeCloseTo(100 / 24, 5); // 1 kWh runs a 10 W bulb for 100 h
+    expect(eq[2]!.value).toBeCloseTo(3600 / 334.88, 3);
+    expect(renderPoster('work', a.map((x) => ({ ...x, powerHist: null, avgPower: null })), opts()).svg).toMatch(/No power data/);
+  });
+  it('power fingerprint draws one bold line per year', async () => {
+    const a = await load();
+    const years = new Set(a.filter((x) => x.powerCurve).map((x) => new Date(x.startMs).getUTCFullYear())).size;
+    const svg = renderPoster('fingerprint', a, opts({ strip: false })).svg;
+    expect(count(svg, /class="year"/g)).toBe(Math.min(8, years));
+    expect(svg).toMatch(/ESTIMATED FTP/);
+  });
+  it('sunrise clock draws an arc per activity, and daylight from the sunrise equation', async () => {
+    const a = await load();
+    const svg = renderPoster('sunrise', a, opts({ strip: false })).svg;
+    expect(count(svg, /A[\d.]+,[\d.]+ 0 [01] 1 /g)).toBe(a.length + 1); // the activities, plus the outer edge of daylight
+    expect(svg).toMatch(/class="daylight"/);
+    // London, 21 June 2024: sunrise 03:43 UTC, sunset 20:21 UTC (to within a few minutes)
+    const d = Math.floor(Date.UTC(2024, 5, 21) / 86_400_000);
+    const s = sunTimes(d, 51.5, -0.13);
+    const hm = (ms: number) => new Date(ms).getUTCHours() * 60 + new Date(ms).getUTCMinutes();
+    expect(Math.abs(hm(s.rise) - (3 * 60 + 43))).toBeLessThan(4);
+    expect(Math.abs(hm(s.set) - (20 * 60 + 21))).toBeLessThan(4);
+    const polar = sunTimes(d, 78, 15);
+    expect(polar.set - polar.rise).toBeGreaterThan(86_000_000);
   });
 });
