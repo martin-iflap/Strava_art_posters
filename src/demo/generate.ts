@@ -58,8 +58,9 @@ interface Path { pts: XY[]; closed: boolean; cum: number[]; len: number; eleA: n
 function mkPath(pts: XY[], closed: boolean, r: Rng): Path {
   const cum = [0];
   for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1]! + Math.hypot(pts[i]![0] - pts[i - 1]![0], pts[i]![1] - pts[i - 1]![1]));
-  const amp = range(r, 20, 140);
-  return { pts, closed, cum, len: cum[cum.length - 1]!, eleA: [amp, amp * 0.4], eleP: [range(r, 6000, 15000), range(r, 800, 2500)], eleF: [r() * 6, r() * 6] };
+  // rolling hills: grades up to about 7 %, with small bumps on top
+  const amp = range(r, 15, 90);
+  return { pts, closed, cum, len: cum[cum.length - 1]!, eleA: [amp, amp * 0.15], eleP: [range(r, 8000, 20000), range(r, 1500, 4000)], eleF: [r() * 6, r() * 6] };
 }
 
 function makeLoop(r: Rng, radius: number, cx: number, cy: number): Path {
@@ -109,9 +110,9 @@ function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number,
   const base = kind === 'ride' ? range(r, 6.5, 9) : kind === 'run' ? range(r, 2.7, 3.5) : range(r, 1.2, 1.5);
   const total = path.closed ? path.len : path.len;
   const out: Sample[] = [];
-  let s = 0, t = startMs, dist = 0, hr = 95, prevEle = eleAt(path, offset);
+  let s = 0, t = startMs, dist = 0, hr = 95, prevEle = eleAt(path, offset), pw = 120;
   let stopLeft = 0;
-  const hrMax = range(r, 0.62, 0.82);
+  const hrMax = range(r, 0.42, 0.7);
   while (s < total && out.length < 20000) {
     const pos = at(path, offset + dir * s);
     const ele = eleAt(path, offset + dir * s) + gauss(r) * 0.4;
@@ -120,11 +121,15 @@ function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number,
     let v = stopLeft > 0 ? 0 : Math.max(0.5, base * (1 - grade * 4) * (1 + gauss(r) * 0.06));
     if (stopLeft > 0) stopLeft--;
     else if (r() < 0.004) stopLeft = Math.floor(range(r, 6, 24) / step) + 1;
-    const lat = origin[0] + (pos[1] + lateral[1] + gauss(r) * 1.5) / M_LAT;
-    const lon = origin[1] + (pos[0] + lateral[0] + gauss(r) * 1.5) / (M_LAT * Math.cos((origin[0] * Math.PI) / 180));
+    const lat = origin[0] + (pos[1] + lateral[1] + gauss(r) * 0.5) / M_LAT;
+    const lon = origin[1] + (pos[0] + lateral[0] + gauss(r) * 0.5) / (M_LAT * Math.cos((origin[0] * Math.PI) / 180));
     const target = 95 + (188 - 95) * Math.min(1, hrMax + grade * 2.5) * (v === 0 ? 0.7 : 1);
     hr += (target - hr) * 0.08 + gauss(r) * 1.2;
-    const power = v === 0 ? 0 : Math.max(0, Math.min(900, 110 + 22 * v + 2500 * grade * (v / 8) + gauss(r) * 25));
+    // Road-bike physics (80 kg, Crr 0.005, CdA 0.32) with smoothed rider noise: coasts downhill, works uphill.
+    const pTarget = v === 0 ? 0 : Math.max(0, (80 * 9.81 * v * (grade + 0.005) + 0.5 * 1.2 * 0.32 * v ** 3) / 0.97);
+    pw += (pTarget - pw) * (1 - Math.exp(-step / 6)) + gauss(r) * 12;
+    if (r() < 0.01 * step) pw += range(r, 80, 300); // a short surge
+    const power = v === 0 ? 0 : Math.max(0, Math.min(1200, pw));
     out.push({
       t, lat, lon, ele, dist,
       hr: withHr ? Math.round(hr) : NaN,
@@ -241,7 +246,7 @@ const CSV_TYPE: Record<Kind, string> = { ride: 'Ride', run: 'Run', walk: 'Walk' 
 export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: Truth } {
   const r = rng32(opts.seed ?? 1234);
   const density = opts.density ?? 1;
-  const step = opts.stepS ?? 15;
+  const step = opts.stepS ?? 5;
   const corrupt = opts.corrupt ?? true;
 
   const rideLoops = [makeLoop(r, 5200, 0, 0), makeLoop(r, 8500, 800, -600), makeLoop(r, 3800, -1200, 900), makeLoop(r, 11000, 0, 400)];
@@ -275,7 +280,7 @@ export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: T
       const path = oneOff ? makeWander(r, kind === 'ride' ? range(r, 20_000, 90_000) : range(r, 3000, 12_000)) : pick(r, loops);
       const hasPower = kind === 'ride' && d.getUTCFullYear() >= 2022 && r() < 0.7;
       const hasHr = r() < 0.85;
-      const sm = simulate(r, path, kind, startMs, kind === 'ride' ? step : Math.max(2, step / 2), hasHr, hasPower);
+      const sm = simulate(r, path, kind, startMs, step, hasHr, hasPower);
       const dist = sm[sm.length - 1]!.dist;
       const elapsed = (sm[sm.length - 1]!.t - sm[0]!.t) / 1000;
       let moving = 0;
@@ -299,7 +304,7 @@ export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: T
       let warn = false;
       let dropFile = false;
       if (corrupt) {
-        if (n === 20) { payload = payload.subarray(0, Math.floor(payload.length / 2)); warn = true; } // truncated
+        if (n === 20) { const z = gzipSync(payload); payload = z.subarray(0, Math.floor(z.length / 2)); warn = true; } // truncated (unreadable whatever the format)
         else if (n === 41) { payload = enc('this is not a track file'); file = `${base}.gpx`; warn = true; }
         else if (n === 62) { dropFile = true; warn = true; } // row points at a file that is not in the export
         else if (n === 83) { rowName = '=HYPERLINK("http://example.invalid","click")'; }

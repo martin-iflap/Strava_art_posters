@@ -34,6 +34,14 @@ export interface Activity {
   np: number | null;
   /** Best average power for standard durations, as [seconds, watts] pairs (mean-maximal power). null = no power stream. */
   powerCurve: [number, number][] | null;
+  /** Highest average heart rate held for each duration, as [seconds, bpm] pairs. null = no heart-rate stream. */
+  hrCurve: [number, number][] | null;
+  /** Highest average speed held for each duration (the best-pace curve), as [seconds, m/s] pairs. null = no distance stream. */
+  paceCurve: [number, number][] | null;
+  /** Normalized graded pace as a speed (m/s): grade-adjusted (Minetti), then 30 s rolling 4th-power mean. For rTSS. */
+  ngp: number | null;
+  /** Seconds at each speed, as [speed × 10 (0.1 m/s bins), seconds] pairs. For pace zones. null = no speed. */
+  speedHist: [number, number][] | null;
   /** Fastest elapsed time over standard distances, as [metres, seconds] pairs. null = no distance/time stream. */
   bestEfforts: [number, number][] | null;
   /**
@@ -61,8 +69,8 @@ export interface ImportResult {
 }
 
 export const ROUTE_POINTS = 256;
-export const PROFILE_POINTS = 100;
-export const SERIES_POINTS = 100;
+export const PROFILE_POINTS = 300;
+export const SERIES_POINTS = 300;
 
 export type Tz = 'UTC' | 'local';
 export type Units = 'metric' | 'imperial';

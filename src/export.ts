@@ -47,7 +47,7 @@ export function activitiesCsv(acts: Activity[], o: ExportOptions): string {
   const header = [
     'id', 'date', 'start_time_utc', 'name', 'sport', `distance_${distanceUnit(u)}`, 'moving_time_s', 'elapsed_time_s',
     `elevation_gain_${elevationUnit(u)}`, `avg_speed_${speedUnit(u).replace('/', '')}`, 'avg_hr', 'max_hr', 'avg_power', 'max_power',
-    'normalized_power', 'intensity_factor', 'tss', 'tss_source', 'aerobic_decoupling_pct', ...zh, ...zp,
+    'normalized_power', 'normalized_graded_pace_s_per_km', 'intensity_factor', 'tss', 'tss_source', 'aerobic_decoupling_pct', ...zh, ...zp,
   ];
   const rows = acts.map((a) => {
     const hz = o.hrZones ? activityZones(a, 'hr', o.hrZones) : null;
@@ -57,7 +57,7 @@ export function activitiesCsv(acts: Activity[], o: ExportOptions): string {
       a.id, ymd(parts(a.startMs, o.tz)), new Date(a.startMs).toISOString(), a.name, a.sport,
       r(distance(a.distanceM, u)), Math.round(a.movingS), Math.round(a.elapsedS), r(elevation(a.elevGainM, u), 1),
       r(speed(a.movingS > 0 ? a.distanceM / a.movingS : 0, u)), r(a.avgHr, 1), a.maxHr, r(a.avgPower, 1), a.maxPower,
-      r(a.np, 1), load ? r(load.if, 3) : null, load ? r(load.tss, 1) : null, load?.source ?? null, a.decoupling,
+      r(a.np, 1), a.ngp ? r(1000 / a.ngp, 1) : null, load ? r(load.if, 3) : null, load ? r(load.tss, 1) : null, load?.source ?? null, a.decoupling,
       ...(o.hrZones ? o.hrZones.map((_, i) => (hz ? r(hz[i]!, 1) : null)) : []),
       ...(o.powerZones ? o.powerZones.map((_, i) => (pz ? r(pz[i]!, 1) : null)) : []),
     ];

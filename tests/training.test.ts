@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { CURVE_DURATIONS, minettiCost, normalizedGradedSpeed } from '../src/parse/track';
 import { bestEfforts, decoupling, meanMax, normalizedPower, perSecond, summarizeTrack, emptyTrack } from '../src/parse/track';
-import { activityLoad, bestEffortsBySport, bestPowerCurve, estimateFtp, formLabel, lthrOf, rampRate, trainingLoad } from '../src/stats/training';
+import { activityLoad, criticalPower, eddington, thresholdsAt, bestEffortsBySport, bestPowerCurve, estimateFtp, formLabel, lthrOf, rampRate, trainingLoad } from '../src/stats/training';
 import { act, utc } from './helpers';
 
 describe('per-second streams', () => {
@@ -49,6 +50,36 @@ describe('training load', () => {
     expect(l.source).toBe('hr');
     expect(activityLoad(act({ startMs: 0 }), { ftp: 250, lthr: 160 })).toBeNull();
   });
+  it('hrTSS: easy hours score far below 100, hard ones above (TRIMP-weighted)', () => {
+    const t = { ftp: null, lthr: 160, maxHr: 185, restHr: 50 };
+    const easy = activityLoad(act({ startMs: 0, hrHist: [[120, 3600]] }), t)!.tss;
+    const hard = activityLoad(act({ startMs: 0, hrHist: [[170, 3600]] }), t)!.tss;
+    expect(easy).toBeGreaterThan(25);
+    expect(easy).toBeLessThan(50);
+    expect(hard).toBeGreaterThan(110);
+    expect(activityLoad(act({ startMs: 0, hrHist: [[160, 1800]] }), t)!.tss).toBeCloseTo(50);
+  });
+  it('rTSS from normalized graded pace and threshold pace', () => {
+    const run = act({ startMs: 0, sport: 'Run', movingS: 3600, ngp: 4, hrHist: [[150, 3600]] });
+    const l = activityLoad(run, { ftp: null, lthr: 160, pace: 4 })!;
+    expect(l.source).toBe('pace');
+    expect(l.tss).toBeCloseTo(100);
+    expect(activityLoad(run, { ftp: null, lthr: 160, pace: 5 })!.tss).toBeCloseTo(64);
+  });
+  it('dated thresholds: older activities use the FTP of their day', () => {
+    const t = { ftp: 250, lthr: null, history: [{ untilMs: utc(2024, 1, 1), ftp: 200 }] };
+    expect(thresholdsAt(t, utc(2023, 6, 1)).ftp).toBe(200);
+    expect(thresholdsAt(t, utc(2024, 6, 1)).ftp).toBe(250);
+    expect(activityLoad(act({ startMs: utc(2023, 6, 1), ...hour(200) }), t)!.tss).toBeCloseTo(100);
+  });
+  it('critical power fits W = CP·t + W′', () => {
+    const curve = [180, 300, 600, 1200].map((s) => ({ seconds: s, watts: 250 + 20000 / s, activityId: 'x', startMs: 0 }));
+    expect(criticalPower(curve)).toEqual({ cp: 250, wPrime: 20000 });
+  });
+  it('Eddington number', () => {
+    const days = [12, 11, 10, 9, 3, 2].map((km, i) => act({ startMs: utc(2024, 1, i + 1), distanceM: km * 1000 }));
+    expect(eddington(days, 1000, (a) => a.startMs)).toEqual({ e: 4, next: 1 });
+  });
   it('power wins over heart rate', () => {
     expect(activityLoad(act({ startMs: 0, ...hour(200), hrHist: [[150, 3600]] }), { ftp: 250, lthr: 160 })!.source).toBe('power');
   });
@@ -80,5 +111,20 @@ describe('training load', () => {
     const r2 = act({ startMs: 2, sport: 'Run', bestEfforts: [[1000, 240]] });
     const rows = bestEffortsBySport([r1, r2, act({ startMs: 3, bestEfforts: [[1000, 80]] })], 'Run');
     expect(rows.map((r) => [r.meters, r.top.map((e) => e.seconds)])).toEqual([[1000, [240, 250]], [5000, [1400]]]);
+  });
+});
+
+describe('normalized graded pace', () => {
+  it('equals the speed on the flat and rises uphill', () => {
+    const n = 600;
+    const dist = Array.from({ length: n }, (_, i) => i * 4);
+    expect(normalizedGradedSpeed(dist, dist.map(() => 100))).toBeCloseTo(4, 1);
+    const up = normalizedGradedSpeed(dist, dist.map((d) => 100 + d * 0.05))!;
+    expect(up).toBeGreaterThan(4 * 1.25);
+    expect(minettiCost(0)).toBeCloseTo(3.6);
+  });
+  it('dense curve durations include the classic points', () => {
+    for (const d of [1, 5, 60, 300, 1200, 1800, 3600, 7200]) expect(CURVE_DURATIONS).toContain(d);
+    expect(CURVE_DURATIONS.length).toBeGreaterThan(100);
   });
 });

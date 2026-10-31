@@ -254,3 +254,22 @@ describe('privacy', () => {
     expect(points(renderPoster('overlay', a, opts({ hideEnds: 200 })).svg)).toBe(4);
   });
 });
+
+describe('art posters', () => {
+  it('bloom draws one petal per route, repeated by the symmetry', async () => {
+    const a = await load();
+    const routes = a.filter((x) => x.route && x.route.length >= 8).length;
+    const one = renderPoster('bloom', a, opts({ strip: false }));
+    expect(count(one.svg, /<path d=/g)).toBeLessThanOrEqual(routes);
+    expect(count(one.svg, /<path d=/g)).toBeGreaterThan(routes * 0.8);
+    const three = renderPoster('bloom', a, opts({ strip: false, bloomSymmetry: 3 }));
+    expect(count(three.svg, /<path d=/g) % 3).toBe(0);
+  });
+  it('spiral draws one stroke per active day; stream one ribbon per sport', async () => {
+    const a = await load();
+    const days = new Set(a.map((x) => Math.floor(x.startMs / 86_400_000))).size;
+    expect(count(renderPoster('spiral', a, opts({ strip: false })).svg, /<line /g)).toBe(days);
+    const sports = new Set(a.map((x) => x.sport)).size;
+    expect(count(renderPoster('stream', a, opts({ strip: false })).svg, /fill-opacity="0.88"/g)).toBe(Math.min(6, sports));
+  });
+});

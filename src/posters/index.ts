@@ -7,6 +7,7 @@ import { climb } from './climb';
 import { world } from './world';
 import { landscape, pickLabel, pickProfiles } from './landscape';
 import { space } from './space';
+import { bloom, spiral, stream } from './art';
 import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
 import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type Poster, type PosterOptions, type PosterType } from './common';
 
@@ -325,6 +326,20 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
       const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
       const f = makeFrame(sel, o, 'To space', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · ${o.spaceMetric === 'distance' ? 'your distance' : 'your climbing'}, pointed straight up`, o.strip);
       return space(sel, o, f);
+    }
+    case 'bloom': {
+      const year = o.bloomYear;
+      const sel = year === 'all' ? all : all.filter((a) => parts(a.startMs, o.tz).y === year);
+      const f = makeFrame(sel, o, 'Route bloom', `${year === 'all' ? rangeLabel(sel, o.tz) : year} · ${Math.min(Math.floor(600 / Math.max(1, o.bloomSymmetry) ** 0.85), sel.filter((a) => a.route).length)} routes from one centre, in date order${o.bloomSymmetry > 1 ? ` · ${o.bloomSymmetry}-fold` : ''}`, o.strip);
+      return bloom(sel, o, f);
+    }
+    case 'stream': {
+      const f = makeFrame(all, o, 'Stream of seasons', `${range} · ${metric} per week by sport, time flowing down`, o.strip);
+      return stream(all, o, f);
+    }
+    case 'spiral': {
+      const f = makeFrame(all, o, 'Year spiral', `${range} · one turn per year · each stroke a day's ${metric}`, o.strip);
+      return spiral(all, o, f);
     }
     case 'climb': {
       const mode = o.climbYear === 'all' || o.climbYear === 'overlay' ? o.climbYear : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();

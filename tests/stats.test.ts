@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { byPeriod, byWeekday, bySport, filterSport, median, records, streaks, summarize } from '../src/stats/summary';
-import { activityZones, hrZones, observedMaxHr, powerZones, secondsInZones, zoneIndex, zoneTotals, zonesBy } from '../src/stats/zones';
+import { activityZones, hrZones, paceZones, observedMaxHr, powerZones, secondsInZones, zoneIndex, zoneTotals, zonesBy } from '../src/stats/zones';
 import { dayNumber, isoWeekKey, parts } from '../src/util/time';
 import { distance, elevation, formatDuration, kmToMi, miToKm, speed } from '../src/util/units';
 import { act, utc } from './helpers';
@@ -114,8 +114,14 @@ describe('zones', () => {
     expect(zoneIndex(171, z)).toBe(4);
     expect(zoneIndex(250, z)).toBe(4);
   });
-  it('HR zones from LTHR 170', () => {
-    expect(hrZones({ mode: 'lthr', value: 170 }).map((x) => x.lower)).toEqual([0, 145, 153, 162, 170]);
+  it('HR zones from LTHR 170 (Friel: cycling by default, running for run-like sports)', () => {
+    expect(hrZones({ mode: 'lthr', value: 170 }).map((x) => x.lower)).toEqual([0, 138, 153, 160, 170, 175, 182]);
+    expect(hrZones({ mode: 'lthr', value: 170 }, 'Run').map((x) => x.lower)).toEqual([0, 145, 153, 162, 170, 175, 182]);
+    expect(hrZones({ mode: 'lthr', value: 170 }).map((x) => x.name)).toEqual(['Z1', 'Z2', 'Z3', 'Z4', 'Z5a', 'Z5b', 'Z5c']);
+  });
+  it('pace zones from a 4:00 /km threshold (Friel, in 0.1 m/s)', () => {
+    const z = paceZones(1000 / 240); // 4.1667 m/s
+    expect(z.map((x) => x.lower)).toEqual([0, 32.3, 36.5, 39.3, 41.3, 43, 46.3]);
   });
   it('power zones from FTP 200', () => {
     const z = powerZones(200);

@@ -1,21 +1,23 @@
 import { dash, fmt, opt, plural } from './format';
 import { h, table, type Row } from './dom';
 import { activityPanel } from './activitylist';
-import { Cursor, lineChart, sampleAt, xyChart, type XYSeries } from './charts';
-import { activityLoad, bestPowerCurve, distanceName, durationName, effortDistances, type Thresholds } from './stats/training';
+import { Cursor, Zoom, chartBox, lineChart, sampleAt, type XYSeries } from './charts';
+import { activityLoad, bestPaceCurve, bestPowerCurve, distanceName, durationName, effectiveLabel, effortDistances, thresholdsAt, type Thresholds } from './stats/training';
 import { zoneRows } from './zonerows';
 import { TILE_SOURCES, attribution, defaultTileSource, routeMap, type TileSource } from './map';
 import type { RouteCluster } from './stats/routes';
 import { activityZones, type Zone } from './stats/zones';
 import type { Activity, Tz, Units } from './types';
-import { clockLabel, parts, ymd } from './util/time';
+import { clockLabel, dayNumber, fromDayNumber, parts, ymd } from './util/time';
 import { distance, distanceUnit, elevation, elevationUnit, formatDuration, speed, speedUnit, KM_PER_MI } from './util/units';
 
 export interface DetailContext {
   units: Units;
   tz: Tz;
-  hz: Zone[] | null;
+  /** heart-rate zones for a sport (Friel's running or cycling table), power zones, pace zones (0.1 m/s) */
+  hzFor(sport: string): Zone[] | null;
   pz: Zone[] | null;
+  paceZ: Zone[] | null;
   /** every activity (all sports), for rankings */
   all: Activity[];
   /** FTP and threshold HR, for training stress */
@@ -31,7 +33,16 @@ export interface DetailContext {
   setTiles(id: string): void;
 }
 
-const PACE_SPORTS = new Set(['Run', 'Walk', 'Hike']);
+const PACE_SPORTS = new Set(['Run', 'Walk', 'Hike', 'Trail Run', 'Virtual Run']);
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const durTick = (s: number) => durationName(s).replace(' min', 'm').replace(' s', 's').replace(' h ', 'h').replace(' h', 'h');
+function durationTicks(lo: number, hi: number): number[] {
+  const cand = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 10800, 18000, 36000].filter((d) => d >= lo * 0.999 && d <= hi * 1.001);
+  const out: number[] = [];
+  const gap = Math.log(hi / lo) / 8;
+  for (const d of cand) if (!out.length || Math.log(d / out[out.length - 1]!) >= gap * 0.9) out.push(d);
+  return out;
+}
 
 /** Time (s) at a distance along the activity, interpolated over the km-split table. */
 function timeAt(sp: NonNullable<Activity['splits']>, m: number): number {
@@ -102,15 +113,18 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
   if (a.avgPower !== null) tiles.push(stat(`${fmt(a.avgPower, 0)} W`, 'average power'));
   if (a.maxPower !== null) tiles.push(stat(`${fmt(a.maxPower, 0)} W`, 'max power'));
   if (a.avgCadence !== null) tiles.push(stat(`${fmt(a.avgCadence, 0)} rpm`, a.sport === 'Run' ? 'cadence (steps/min)' : 'average cadence'));
-  root.append(h('div', { class: 'grid' }, ...tiles));
+  const headline = h('div', { class: 'grid headline' }, ...tiles);
+  const effortHolder = h('div', {});
 
   // effort: the TrainingPeaks-style numbers, each with a one-line explanation
   const tip = (v: string, l: string, help: string) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l), h('small', {}, help));
   const effort: HTMLElement[] = [];
   const load = activityLoad(a, c.thresholds);
-  if (load) effort.push(tip(fmt(load.tss, 0), load.source === 'power' ? 'training stress (TSS)' : 'training stress (hrTSS)',
-    `${load.source === 'hr' ? 'Estimated from heart rate. ' : ''}100 = one hour flat out at threshold.`));
+  const paceU = u === 'metric' ? 1000 : KM_PER_MI * 1000;
+  if (load) effort.push(tip(fmt(load.tss, 0), load.source === 'power' ? 'training stress (TSS)' : load.source === 'pace' ? 'running stress (rTSS)' : 'training stress (hrTSS)',
+    `${load.source === 'hr' ? 'From heart rate. ' : load.source === 'pace' ? 'From normalized graded pace. ' : ''}100 = one hour flat out at threshold.${effectiveLabel(c.thresholds, a.startMs)}`));
   if (load) effort.push(tip(fmt(load.if, 2), 'intensity factor', load.if < 0.75 ? 'Easy (recovery or endurance).' : load.if < 0.9 ? 'Moderate (tempo).' : load.if < 1.05 ? 'Hard (threshold).' : 'Very hard: above threshold, typical of short races.'));
+  if (a.ngp && PACE_SPORTS.has(a.sport)) effort.push(tip(`${formatDuration(paceU / a.ngp)} /${du}`, 'normalized graded pace', 'Your pace as if the route were flat and steady: hills and surges count as the effort they cost.'));
   if (a.np !== null) effort.push(tip(`${fmt(a.np, 0)} W`, 'normalized power', 'What the effort cost your body: like average power, but surges count extra.'));
   if (a.np !== null && a.avgPower) effort.push(tip(fmt(a.np / a.avgPower, 2), 'variability index', a.np / a.avgPower < 1.06 ? 'Steady effort.' : 'Surgy effort (hills, groups, intervals).'));
   if (a.avgPower !== null && a.powerHist) {
@@ -119,18 +133,21 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
   }
   if (a.avgHr) {
     if (a.np !== null) effort.push(tip(fmt(a.np / a.avgHr, 2), 'efficiency factor', 'Normalized watts per heartbeat. Rising over months on similar rides = better aerobic fitness.'));
-    else if (avgMps > 0 && PACE_SPORTS.has(a.sport)) effort.push(tip(fmt((avgMps * 60) / a.avgHr, 2), 'efficiency factor', 'Metres per minute per heartbeat. Rising over months = better aerobic fitness.'));
+    else if ((a.ngp || avgMps > 0) && PACE_SPORTS.has(a.sport)) effort.push(tip(fmt(((a.ngp ?? avgMps) * 60) / a.avgHr, 2), 'efficiency factor', 'Metres per minute (graded) per heartbeat. Rising over months = better aerobic fitness.'));
   }
   if (a.decoupling !== null) effort.push(tip(`${fmt(a.decoupling, 1)} %`, 'aerobic decoupling', a.decoupling < 5 ? 'Under 5 %: heart rate stayed in step with output. Good endurance.' : 'Heart rate drifted up in the second half for the same output (fatigue, heat or low fitness).'));
-  if (effort.length) root.append(h('h3', {}, 'Effort'), h('div', { class: 'grid' }, ...effort));
-  else if (!c.thresholds.ftp && !c.thresholds.lthr && (a.hrHist || a.powerHist)) root.append(h('p', { class: 'small' }, 'Set your FTP or heart rate in Stats → Training load to see training stress for this activity.'));
+  if (effort.length) effortHolder.append(h('h3', {}, 'Effort'), h('div', { class: 'grid' }, ...effort));
+  else if (!c.thresholds.ftp && !c.thresholds.lthr && (a.hrHist || a.powerHist)) effortHolder.append(h('p', { class: 'small' }, 'Set your FTP, heart rate or threshold pace in Stats → Training load to see training stress for this activity.'));
+  void thresholdsAt;
+  void root;
 
   // route + charts, sharing one hover cursor (fraction of the distance)
   const xMax = distance(a.splits?.endM ?? a.distanceM, u);
   const cursor = new Cursor();
+  const zoom = new Zoom();
   const charts: HTMLElement[] = [];
   const addChart = (title: string, el: SVGElement) => charts.push(h('figure', { class: 'card chart-card' }, h('figcaption', {}, title), el));
-  const base = { xMax, xUnit: du, cursor };
+  const base = { xMax, xUnit: du, cursor, zoom };
   if (a.profile) {
     const ev = a.profile.map((v) => elevation(v, u));
     addChart(`Elevation (${elevationUnit(u)})`, lineChart({ ...base, values: ev, fmtY: (v) => fmt(v, 0), yUnit: elevationUnit(u), kind: 'elevation', label: 'Elevation profile' }));
@@ -158,20 +175,31 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
     ? h('figure', { class: 'card route-card' }, routeMap(a.route, { tiles: c.tiles, markers: true, label: `Route of ${a.name}`, cursor, describe, interactive: true, onTilesFailed: tilesFailed }),
         h('figcaption', {}, h('span', { class: 'legend' }, h('span', { class: 'dot start' }), ' start  ', h('span', { class: 'dot finish' }), ' finish'), mapNote))
     : h('div', { class: 'card empty' }, h('p', {}, 'This activity has no GPS track (indoor, manual, or the file was missing or unreadable).'));
-  root.append(h('div', { class: 'detail-grid' }, routeCard, h('div', { class: 'charts' }, ...(charts.length ? charts : [h('div', { class: 'card empty' }, h('p', {}, 'No elevation, speed, heart-rate or power data for this activity.'))]))));
+  const zoomReset = h('button', { class: 'zoom-reset', hidden: true, onclick: () => zoom.set(null) }, 'Reset zoom');
+  const zoomNote = h('span', { class: 'zoom-hint' }, 'Drag across a chart to zoom in on part of the activity');
+  zoom.on((r) => {
+    zoomReset.hidden = !r;
+    zoomNote.textContent = r ? `Showing ${fmt(distance(r[0] * totalM, u))}–${fmt(distance(r[1] * totalM, u))} ${du}${a.splits ? ` (${formatDuration(timeAt(a.splits, r[1] * a.splits.endM) - timeAt(a.splits, r[0] * a.splits.endM))})` : ''}` : 'Drag across a chart to zoom in on part of the activity';
+  });
+  root.append(h('div', { class: 'detail-top' }, routeCard, headline), effortHolder,
+    charts.length ? h('div', { class: 'chart-tools detail-tools' }, zoomNote, h('span', { class: 'spacer' }), zoomReset) : '',
+    h('div', { class: 'charts detail-charts' }, ...(charts.length ? charts : [h('div', { class: 'card empty' }, h('p', {}, 'No elevation, speed, heart-rate or power data for this activity.'))])));
 
   // zones
-  const zoneBlock = (title: string, zones: Zone[] | null, stream: 'hr' | 'power') => {
+  const paceRange = (z: Zone) => `${z.lower === 0 ? `slower than ${formatDuration(paceU / (z.upper! / 10))}` : z.upper === null ? `faster than ${formatDuration(paceU / (z.lower / 10))}` : `${formatDuration(paceU / (z.upper / 10))}–${formatDuration(paceU / (z.lower / 10))}`} /${du}`;
+  const zoneBlock = (title: string, zones: Zone[] | null, stream: 'hr' | 'power' | 'pace') => {
     const sec = h('div', {}, h('h3', {}, title));
     const z = zones ? activityZones(a, stream, zones) : null;
-    if (!zones) { sec.append(h('p', {}, stream === 'power' ? 'Enter your FTP in Stats → Time in zones to see power zones.' : 'No heart-rate data in this export.')); return sec; }
-    if (!z) { sec.append(h('p', {}, stream === 'hr' ? 'This activity has no heart-rate data.' : 'This activity has no power data.')); return sec; }
-    sec.append(h('div', { class: 'card' }, zoneRows(zones, z, stream === 'hr' ? 'bpm' : 'W')));
+    if (!zones) { sec.append(h('p', {}, stream === 'power' ? 'Enter your FTP in Stats → Training load to see power zones.' : stream === 'pace' ? 'Enter your threshold pace in Stats → Training load to see pace zones.' : 'No heart-rate data in this export.')); return sec; }
+    if (!z) { sec.append(h('p', {}, stream === 'hr' ? 'This activity has no heart-rate data.' : stream === 'pace' ? 'This activity has no speed data.' : 'This activity has no power data.')); return sec; }
+    sec.append(h('div', { class: 'card' }, zoneRows(zones, z, stream === 'hr' ? 'bpm' : stream === 'power' ? 'W' : '', stream === 'pace' ? paceRange : undefined)));
     return sec;
   };
-  if (a.hrHist || a.powerHist || c.hz) {
-    root.append(h('h2', {}, 'Zones'), zoneBlock('Heart rate', c.hz, 'hr'));
+  const hz = c.hzFor(a.sport);
+  if (a.hrHist || a.powerHist || hz) {
+    root.append(h('h2', {}, 'Zones'), zoneBlock('Heart rate', hz, 'hr'));
     if (a.powerHist || c.pz) root.append(zoneBlock('Power', c.pz, 'power'));
+    if (PACE_SPORTS.has(a.sport) && a.speedHist) root.append(zoneBlock('Pace', c.paceZ, 'pace'));
   }
 
   // power curve against your all-time best
@@ -181,14 +209,29 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
       { name: 'This activity', cls: 's-main', points: a.powerCurve, area: true },
       { name: `Your best (${a.sport.toLowerCase()})`, cls: 's-compare', points: best.filter((p) => p.seconds <= a.powerCurve![a.powerCurve!.length - 1]![0]).map((p) => [p.seconds, p.watts]) },
     ];
-    const max = a.powerCurve[a.powerCurve.length - 1]![0];
     const records = a.powerCurve.filter(([s, w]) => best.find((p) => p.seconds === s)?.watts === w && best.find((p) => p.seconds === s)?.activityId === a.id);
+    const recNames = [1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200].filter((d) => records.some(([s]) => s === d));
+    const byId = new Map(c.all.map((x) => [x.id, x]));
     root.append(h('h2', {}, 'Power curve'),
       h('figure', { class: 'card chart-card' },
-        h('ul', { class: 'chart-legend' }, ...series.map((x) => h('li', { class: x.cls }, h('i', {}), x.name))),
-        xyChart({ series, log: true, label: 'Best average power for each duration in this activity, against your best ever', xTicks: [1, 5, 30, 60, 300, 1200, 3600, 7200, 18000].filter((d) => d <= max * 1.01),
-          fmtX: (x) => durationName(x).replace(' min', 'm').replace(' s', 's').replace(' h', 'h'), tipX: (x) => `Best ${durationName(x)}`, fmtY: (v) => `${fmt(v, 0)} W`, yZero: true })),
-      records.length ? h('p', { class: 'small' }, `Your best ever ${records.map(([s]) => durationName(s)).join(', ')} power ${records.length === 1 ? 'was' : 'were'} set in this activity.`) : '');
+        chartBox({ key: `act-curve-${a.id}`, series, log: true, label: 'Best average power for each duration in this activity, against your best ever', xTicks: durationTicks,
+          fmtX: durTick, tipX: (x) => `Best ${durationName(x)}`, fmtY: (v) => `${fmt(v, 0)}`, yZero: true,
+          tipExtra: (name, x) => { if (name === 'This activity') return null; const p = best.find((q) => q.seconds === x); return p ? `${byId.get(p.activityId)?.name ?? ''} · ${ymd(parts(p.startMs, c.tz))}` : null; },
+          onPick: (x) => { const p = best.find((q) => q.seconds === x); if (p && p.activityId !== a.id) c.open(p.activityId); } })),
+      recNames.length ? h('p', { class: 'small' }, `Your best ever ${recNames.map(durationName).join(', ')} power ${recNames.length === 1 ? 'was' : 'were'} set in this activity.`) : h('p', { class: 'small' }, 'Select a point on your best line to open the activity that set it.'));
+  }
+  // pace curve for runs
+  if (PACE_SPORTS.has(a.sport) && a.paceCurve && a.paceCurve.length > 10) {
+    const best = bestPaceCurve(c.all.filter((x) => x.sport === a.sport && x.paceCurve));
+    const max = a.paceCurve[a.paceCurve.length - 1]![0];
+    const series: XYSeries[] = [
+      { name: 'This activity', cls: 's-main', points: a.paceCurve.filter(([s]) => s >= 10) },
+      { name: `Your best (${a.sport.toLowerCase()})`, cls: 's-compare', points: best.filter((p) => p.seconds >= 10 && p.seconds <= max).map((p) => [p.seconds, p.watts]) },
+    ];
+    root.append(h('h2', {}, 'Pace curve'), h('figure', { class: 'card chart-card' },
+      chartBox({ key: `act-pace-${a.id}`, series, log: true, label: 'Best average pace for each duration in this activity, against your best ever', xTicks: durationTicks, fmtX: durTick, tipX: (x) => `Best ${durationName(x)}`,
+        fmtY: (v) => (v > 0.3 ? formatDuration(paceU / v) : dash),
+        onPick: (x) => { const p = best.find((q) => q.seconds === x); if (p && p.activityId !== a.id) c.open(p.activityId); } })));
   }
 
   // best efforts, with where they rank among your activities of this sport
@@ -260,8 +303,18 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
       panelHolder.replaceChildren(...(open ? [activityPanel('list-route', `This route, done ${cl.count} times`, [...all].sort((x, y) => y.startMs - x.startMs),
         { units: u, tz: c.tz, tiles: c.tiles, open: c.open, close: () => toggle.click() })] : []));
     } }, `Show all ${cl.count}`);
+    const byDate = [...times].sort((x, y) => x.startMs - y.startMs);
+    const dayOf = (x: Activity) => dayNumber(parts(x.startMs, c.tz));
+    const onDay = new Map(byDate.map((x) => [dayOf(x), x]));
+    const trend = byDate.length >= 3 ? h('figure', { class: 'card chart-card' }, h('figcaption', {}, 'Moving time on this route, by date (lower is faster)'),
+      chartBox({ key: `route-${a.id}`, label: 'Moving time of each activity on this route, by date', height: 180,
+        series: [{ name: 'Each time', cls: 's-compare', points: byDate.map((x) => [dayOf(x), Math.round(x.movingS)]) }, { name: 'This one', cls: 's-fatigue', dots: true, points: [[dayOf(a), Math.round(a.movingS)]] }],
+        xTicks: (lo, hi) => { const out: number[] = []; const p = fromDayNumber(Math.floor(lo)); const step = hi - lo > 900 ? 12 : hi - lo > 300 ? 3 : 1; for (let y = p.y, m = p.m; ; m++) { if (m > 12) { m = 1; y++; } const d = dayNumber({ y, m, d: 1, wd: 0 }); if (d > hi) break; if (d >= lo && (m - 1) % step === 0) out.push(d); } return out; },
+        fmtX: (d) => { const p = fromDayNumber(d); return p.m === 1 ? String(p.y) : MON[p.m - 1]!; }, tipX: (d) => { const p = fromDayNumber(d); return `${p.d} ${MON[p.m - 1]} ${p.y}`; },
+        fmtY: (v) => formatDuration(v), tipExtra: (name, x) => (name === 'Each time' ? onDay.get(x)?.name ?? null : null),
+        onPick: (x) => { const t = onDay.get(x); if (t && t.id !== a.id) c.open(t.id); } })) : '';
     root.append(h('h2', {}, 'Repeated route'),
-      h('p', {}, `You have done this route ${plural(cl.count, 'time')} (best ${formatDuration(cl.bestMovingS)}, average ${formatDuration(cl.avgMovingS)}).${pos ? ` This one is #${pos} fastest of ${times.length}.` : ''} Matching is a heuristic.`),
+      h('p', {}, `You have done this route ${plural(cl.count, 'time')} (best ${formatDuration(cl.bestMovingS)}, average ${formatDuration(cl.avgMovingS)}).${pos ? ` This one is #${pos} fastest of ${times.length}.` : ''} Matching is a heuristic.`), trend,
       h('div', { class: 'card scroll' }, table(['Date', 'Activity', 'Time'], times.slice(0, 8).map((x) => ({
         key: x.id,
         cells: [ymd(parts(x.startMs, c.tz)), x.id === a.id ? `${x.name} (this one)` : h('button', { class: 'link', onclick: () => c.open(x.id) }, x.name), formatDuration(x.movingS)],

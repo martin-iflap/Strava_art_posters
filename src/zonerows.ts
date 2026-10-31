@@ -9,7 +9,7 @@ export const ZONE_COLORS = ['#8e8e93', '#30b0c7', '#34c759', '#ff9f0a', '#ff453a
 const short = (s: number) => (s >= 3600 ? formatHours(s) : s >= 60 ? `${Math.round(s / 60)} m` : `${Math.round(s)} s`);
 
 /** One row per zone: name, range, a bar as long as its share, time and percentage (as Strava and TrainingPeaks show it). */
-export function zoneRows(zones: Zone[], seconds: number[], unit: string): HTMLElement {
+export function zoneRows(zones: Zone[], seconds: number[], unit: string, range?: (z: Zone) => string): HTMLElement {
   const total = seconds.reduce((a, b) => a + b, 0) || 1;
   const max = Math.max(...seconds) || 1;
   const grid = h('div', { class: 'zone-rows' });
@@ -19,7 +19,7 @@ export function zoneRows(zones: Zone[], seconds: number[], unit: string): HTMLEl
     bar.style.background = ZONE_COLORS[i % ZONE_COLORS.length]!;
     grid.append(h('div', { class: 'zr-row' },
       h('span', { class: 'zr-name' }, z.name),
-      h('span', { class: 'zr-range' }, `${z.lower}${z.upper === null ? '+' : '–' + (z.upper - 1)} ${unit}`),
+      h('span', { class: 'zr-range' }, range ? range(z) : `${z.lower}${z.upper === null ? '+' : '–' + (z.upper - 1)} ${unit}`),
       h('span', { class: 'zr-track', 'aria-hidden': 'true' }, bar),
       h('span', { class: 'zr-time' }, short(seconds[i]!)),
       h('span', { class: 'zr-pct' }, `${fmt((seconds[i]! / total) * 100, 0)} %`)));

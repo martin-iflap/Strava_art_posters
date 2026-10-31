@@ -4,21 +4,21 @@ import { activityPanel } from './activitylist';
 import { TILE_SOURCES, attribution, defaultTileSource, referrerAvailable, routeMap, tileSource } from './map';
 import { activityView } from './detail';
 import { ZONE_COLORS, zoneRows } from './zonerows';
-import { barChart, xyChart, type Bar, type XYSeries } from './charts';
-import { activityLoad, bestEffortsBySport, bestPowerCurve, distanceName, durationName, estimateFtp, formLabel, lthrOf, rampRate, trainingLoad, type Thresholds } from './stats/training';
-import { CURVE_DURATIONS } from './parse/track';
+import { barChart, chartBox, chartView, resetChartViews, setChartView, xyChart, type Bar, type XYSeries } from './charts';
+import { activityLoad, bestEffortsBySport, bestHrCurve, bestPaceCurve, bestPowerCurve, criticalPower, distanceName, durationName, eddington, efficiencyFactor, estimateFtp, estimateThresholdPace, formLabel, lthrOf, peaksBy, rampRate, trainingLoad, type CurvePoint, type ThresholdChange, type Thresholds } from './stats/training';
 import { dash, fmt, opt, plural } from './format';
 import { fromDrop, fromFileList } from './input';
+import { CURVE_DURATIONS } from './parse/track';
 import { activitiesCsv, exportFilename, periodCsv, sportCsv, statsJson, zonesCsv, type ExportOptions } from './export';
 import type { RawInput } from './parse/archive';
 import { clusterRoutes, type RouteCluster } from './stats/routes';
 import { byPeriod, byWeekday, bySport, filterSport, records, sportsOf, summarize, type Summary } from './stats/summary';
 import { selectActivities, type Selection } from './stats/select';
 import { findRegions, regionFilter, type Region, type RegionChoice } from './stats/regions';
-import { activityZones, hrZones, observedMaxHr, powerZones, zoneTotals, zonesBy, type HrZoneConfig, type Zone, type ZoneRow } from './stats/zones';
+import { RUN_LIKE, activityZones, hrZones, observedMaxHr, paceZones, powerZones, zoneTotals, zonesBy, type HrZoneConfig, type Zone, type ZoneRow } from './stats/zones';
 import type { Activity, ImportResult, Tz, Units } from './types';
 import { distance, distanceUnit, elevation, elevationUnit, formatDuration, formatHours, speed, speedUnit } from './util/units';
-import { dayNumber, fromDayNumber, isoWeekKey, parts, ymd } from './util/time';
+import { dayNumber, fromDayNumber, isoWeekKey, monthKey, parts, weekStart, ymd } from './util/time';
 import { DEFAULT_POSTER, POSTER_TYPES, SIZES, THEMES, renderPoster, type PosterOptions, type PosterType } from './posters';
 import { IMAGE_KINDS, svgToImage, type ImageKind } from './posters/raster';
 import { EXAMPLE_POSTERS } from './examples';
@@ -47,11 +47,30 @@ interface State {
   mapTiles: string | null;
   /** what the volume charts measure */
   volMetric: 'distance' | 'time' | 'elevation';
-  /** days shown in the fitness chart */
-  loadRange: '90' | '365' | 'all';
+  /** weeks shown by the weekly charts and the week table: 'recent' (last 26), 'YYYY-H1' / 'YYYY-H2', or 'all' */
+  weekSpan: string;
+  /** period of the zone summaries: 'all', 'recent' (last 12 months) or a year */
+  zoneSpan: string;
+  /** sidebar folded away (wide screens) */
+  sideHidden: boolean;
+  /** heart-rate stress model inputs, threshold pace (m/s), body weight (kg) */
+  restHr: number | null;
+  sex: 'm' | 'f';
+  pace: number | null;
+  weight: number | null;
+  /** earlier threshold values, newest last */
+  history: ThresholdChange[];
+  /** month shown in the training calendar ('YYYY-MM'); null = latest */
+  calMonth: string | null;
+  /** a target for the current week, month or year */
+  goal: { period: 'week' | 'month' | 'year'; metric: 'distance' | 'time' | 'elevation'; target: number } | null;
+  /** which mean-maximal curve is shown, its sport (pace), and the point picked on it */
+  curveKind: 'power' | 'hr' | 'pace';
+  curveSport: string | null;
+  curvePick: { kind: State['curveKind']; x: number } | null;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, pick: null, mapTiles: defaultTileSource().id, volMetric: 'distance', loadRange: '365' };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, pick: null, mapTiles: defaultTileSource().id, volMetric: 'distance', weekSpan: 'recent', zoneSpan: 'all', sideHidden: false, restHr: null, sex: 'm', pace: null, weight: null, history: [], calMonth: null, goal: null, curveKind: 'power', curveSport: null, curvePick: null };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 const app = document.getElementById('app')!;
@@ -123,6 +142,11 @@ function startImport(msg: WorkerIn): void {
       state.monthYear = null;
       state.pick = null;
       state.showAll = false;
+      state.calMonth = null;
+      state.curvePick = null;
+      state.weekSpan = 'recent';
+      state.zoneSpan = 'all';
+      resetChartViews();
       state.view = 'stats';
       history.replaceState({ view: 'stats' } satisfies NavEntry, '', location.pathname + location.search);
       animate = true;
@@ -236,7 +260,7 @@ function currentHrZones(all: Activity[]): Zone[] | null {
     if (m === null) return null;
     state.hr = { mode: 'maxHr', value: m };
   }
-  return hrZones(state.hr);
+  return hrZones(state.hr, state.sport);
 }
 
 /** Identify the focused control so it can be re-focused after the DOM is rebuilt (keyboard users keep their place). */
@@ -271,9 +295,11 @@ function renderNow(): void {
 
 
   const navBtn = (v: 'stats' | 'posters', label: string, badge?: string) => h('button', { 'aria-current': (state.view === v || (v === 'stats' && state.view === 'activity')) ? 'page' : undefined, onclick: () => setView(v) }, label, badge ? h('span', { class: 'badge', 'aria-label': `${badge} posters` }, badge) : null);
-  const sections: [string, string][] = [['overview', 'Overview'], ['training', 'Training load'], ['curve', 'Power and best efforts'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
-  const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar' },
-    h('div', { class: 'brand' }, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
+  const sections: [string, string][] = [['overview', 'Overview'], ['progress', 'Progress'], ['training', 'Training load'], ['calendar', 'Calendar'], ['curve', 'Curves and efforts'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
+  const toggleSide = () => { state.sideHidden = !state.sideHidden; render(); (document.querySelector<HTMLElement>(state.sideHidden ? '.side-show' : '.side-hide'))?.focus(); };
+  const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar', id: 'sidebar' },
+    h('div', { class: 'brand side-top' }, h('div', {}, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
+      h('button', { class: 'side-hide', 'aria-label': 'Hide the sidebar', 'aria-controls': 'sidebar', 'aria-expanded': 'true', title: 'Hide the sidebar for more room', onclick: toggleSide }, '«')),
     h('nav', { class: 'nav', 'aria-label': 'Views' }, navBtn('stats', 'Stats'), navBtn('posters', 'Posters', String(POSTER_TYPES.length)),
       ...(state.view === 'stats' && all.length ? sections.map(([id, t]) => h('a', { href: `#${id}` }, t)) : [])),
     h('div', { class: 'filters', role: 'group', 'aria-label': 'Filters', id: 'filters' },
@@ -299,7 +325,8 @@ function renderNow(): void {
     labelScrollables(main);
     app.replaceChildren(
       h('a', { class: 'skip', href: '#main' }, 'Skip to content'),
-      h('div', { class: state.sheet ? 'layout sheet-open' : 'layout' }, sidebar, main),
+      h('div', { class: `layout${state.sheet ? ' sheet-open' : ''}${state.sideHidden ? ' side-hidden' : ''}` }, sidebar, main),
+      ...(state.sideHidden ? [h('button', { class: 'side-show', 'aria-label': 'Show the sidebar', 'aria-controls': 'sidebar', 'aria-expanded': 'false', onclick: toggleSide }, '» Menu')] : []),
       tabbar);
   };
 
@@ -314,7 +341,7 @@ function renderNow(): void {
     const a = all.find((x) => x.id === state.activityId);
     if (a) {
       main.append(activityView(a, {
-        units: state.units, tz: state.tz, hz, pz, all, thresholds: thresholds(),
+        units: state.units, tz: state.tz, hzFor: (sp) => (hz && state.hr ? hrZones(state.hr, sp) : null), pz, paceZ: state.pace ? paceZones(state.pace) : null, all, thresholds: thresholds(),
         list: [...(acts.some((x) => x.id === a.id) ? acts : all)].sort((x, y) => y.startMs - x.startMs),
         open: openActivity, back: closeActivity, clusters: (sport) => clustersFor(all, sport),
         tiles: tileSource(state.mapTiles), setTiles: (id) => { setMapTiles(id); render(); },
@@ -352,8 +379,11 @@ function renderNow(): void {
     add(h('div', { class: 'h2row' }, h('h2', {}, 'By month'), yearTabs(acts, 'Year shown in the month table')),
       monthBars(acts, months), h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, summaryTable('Month', 'month', months.map((r) => ({ label: r.label, s: r.summary, key: r.key, sel: { kind: 'month', value: r.key }, title: monthTitle(r.key) })))), drill('month', acts));
     add(h('h2', {}, 'By weekday'), h('div', { class: 'card' }, summaryTable('Weekday', 'weekday', byWeekday(acts, state.tz).map((r) => ({ label: r.label, s: r.summary, key: String(r.weekday), sel: { kind: 'weekday', value: String(r.weekday) }, title: `Every ${WEEKDAY_NAMES[r.weekday]}` })))), drill('weekday', acts));
-    add(h('details', { open: state.pick?.table === 'week' }, h('summary', {}, 'By ISO week'),
-      h('div', { class: 'card scroll' }, summaryTable('Week', 'week', byPeriod(acts, 'week', state.tz).map((r): SummaryRow => ({ label: `${r.key} (${r.start})`, s: r.summary, key: r.key, sel: { kind: 'week', value: r.key }, title: `Week ${r.key}, from ${r.start}` })).reverse())), drill('week', acts)));
+    const spanKeys = new Set(weeksOf(acts, curSpan(acts)).map(weekKeyOf));
+    const weekStartOf = (start: string) => dayNumber({ y: Number(start.slice(0, 4)), m: Number(start.slice(5, 7)), d: Number(start.slice(8, 10)), wd: 0 });
+    add(h('details', { open: state.pick?.table === 'week' }, h('summary', {}, 'By week'),
+      h('div', { class: 'row' }, weekSpanControl(acts, 'Weeks shown in the week table')),
+      h('div', { class: 'card scroll' }, summaryTable('Week', 'week', byPeriod(acts, 'week', state.tz).filter((r) => spanKeys.has(r.key)).map((r): SummaryRow => ({ label: `${r.key.slice(5)} · ${weekRange(weekStartOf(r.start))}`, s: r.summary, key: r.key, sel: { kind: 'week', value: r.key }, title: `Week ${weekRange(weekStartOf(r.start))}` })).reverse())), drill('week', acts)));
     main.append(zonesSection(all, acts, hz, pz));
     main.append(loopsSection());
     main.append(activitiesSection(acts, hz));
@@ -426,6 +456,8 @@ function recordsSection(acts: Activity[]): HTMLElement {
       ? pickRow('records', 'current', `Current streak: ${r.currentStreak.start} → ${r.currentStreak.end}`, { kind: 'range', value: `${r.currentStreak.start}/${r.currentStreak.end}` }, ['Current streak (as of last activity)', plural(r.currentStreak.days, 'day'), `ending ${r.currentStreak.end}`])
       : ['Current streak (as of last activity)', dash, ''],
   ];
+  const edd = eddington(acts.filter((a) => a.distanceM > 0), u === 'metric' ? 1000 : 1609.344, (a) => dayNumber(parts(a.startMs, state.tz)));
+  if (edd.e > 0) rows.push(['Eddington number', String(edd.e), `${edd.e} days of at least ${edd.e} ${distanceUnit(u)}; ${plural(edd.next, 'more day')} of ${edd.e + 1}+ ${distanceUnit(u)} for ${edd.e + 1}`]);
   return h('div', {}, h('h2', { id: 'records' }, 'Records'),
     h('div', { class: 'card' }, table(['Record', 'Value', 'Details'], rows, { numCols: [1], id: 'records', selected: selectedIn('records') })),
     drill('records', acts));
@@ -483,15 +515,84 @@ function metricTabs(label: string): HTMLElement {
   return h('div', { class: 'seg', role: 'group', 'aria-label': label }, btn('distance'), btn('time'), btn('elevation'));
 }
 
-function legendOf(items: [string, string][]): HTMLElement {
-  return h('ul', { class: 'chart-legend' }, ...items.map(([name, cls]) => h('li', { class: cls }, h('i', {}), name)));
+
+// ---------- week spans ----------
+
+/** Weeks (Monday day numbers) of a span: the last 26 weeks, one half-year, or everything. */
+function weeksOf(acts: Activity[], span: string): number[] {
+  if (!acts.length) return [];
+  const days = acts.map((a) => weekStart(parts(a.startMs, state.tz)));
+  const first = Math.min(...days), last = Math.max(...days);
+  let a = first, b = last;
+  const m = /^(\d{4})-H([12])$/.exec(span);
+  if (m) {
+    const y = Number(m[1]), h1 = m[2] === '1';
+    a = weekStart(fromDayNumber(dayNumber({ y, m: h1 ? 1 : 7, d: 1, wd: 0 })));
+    b = weekStart(fromDayNumber(dayNumber({ y, m: h1 ? 6 : 12, d: h1 ? 30 : 31, wd: 0 })));
+  } else if (span !== 'all') a = Math.max(first, last - 25 * 7);
+  const out: number[] = [];
+  for (let d = a; d <= b; d += 7) out.push(d);
+  return out;
 }
 
-/** Year-to-date lines (one per year, the latest highlighted) and the last 26 weeks as bars, like Strava's progress charts. */
+/** The span choices: last 26 weeks, each half-year with activities (newest first), all. */
+function weekSpanOptions(acts: Activity[]): [string, string][] {
+  const halves = new Set<string>();
+  for (const a of acts) { const p = parts(a.startMs, state.tz); halves.add(`${p.y}-H${p.m <= 6 ? 1 : 2}`); }
+  return [['recent', 'Last 26 weeks'], ...[...halves].sort().reverse().map((k): [string, string] => [k, `${k.slice(0, 4)} ${k.endsWith('1') ? 'Jan – Jun' : 'Jul – Dec'}`]), ['all', 'All weeks']];
+}
+
+const curSpan = (acts: Activity[]) => (weekSpanOptions(acts).some(([k]) => k === state.weekSpan) ? state.weekSpan : 'recent');
+
+/** ‹ span › picker shared by every weekly chart and the week table. */
+function weekSpanControl(acts: Activity[], label: string): HTMLElement {
+  const opts = weekSpanOptions(acts);
+  const cur = curSpan(acts);
+  const i = opts.findIndex(([k]) => k === cur);
+  const go = (k: number) => { state.weekSpan = opts[k]![0]; render(); };
+  return h('div', { class: 'span-pick', role: 'group', 'aria-label': label },
+    h('button', { 'aria-label': 'Earlier weeks', disabled: i >= opts.length - 2, onclick: () => go(i + 1) }, '‹'),
+    h('select', { 'aria-label': label, onchange: (e) => { state.weekSpan = (e.target as HTMLSelectElement).value; render(); } }, ...opts.map(([k, t]) => h('option', { value: k, selected: k === cur }, t))),
+    h('button', { 'aria-label': 'Later weeks', disabled: i <= 0 || cur === 'all', onclick: () => go(i === 1 ? 0 : i - 1) }, '›'));
+}
+
+const weekLabel = (d: number) => { const p = fromDayNumber(d); return `${p.d} ${MONTH_NAMES[p.m - 1]}`; };
+const weekRange = (d: number) => { const a = fromDayNumber(d), b = fromDayNumber(d + 6); return `${a.d} ${MONTH_NAMES[a.m - 1]}${a.y !== b.y ? ` ${a.y}` : ''} – ${b.d} ${MONTH_NAMES[b.m - 1]} ${b.y}`; };
+const weekKeyOf = (d: number) => isoWeekKey(fromDayNumber(d));
+
+/** Activities grouped by the Monday of their week. */
+function byWeekStart(acts: Activity[]): Map<number, Activity[]> {
+  const m = new Map<number, Activity[]>();
+  for (const a of acts) { const d = weekStart(parts(a.startMs, state.tz)); (m.get(d) ?? m.set(d, []).get(d)!).push(a); }
+  return m;
+}
+
+/** Adaptive date ticks (day numbers) for a visible range: weeks, months, quarters or years. */
+function dayTicks(lo: number, hi: number): number[] {
+  const span = hi - lo, out: number[] = [];
+  if (span <= 120) {
+    const every = Math.max(1, Math.ceil(span / 7 / 8));
+    let k = 0;
+    for (let d = weekStart(fromDayNumber(Math.ceil(lo))); d <= hi; d += 7) if (d >= lo && k++ % every === 0) out.push(d);
+    return out;
+  }
+  const months = span <= 400 ? 1 : span <= 1100 ? 3 : 12;
+  const p = fromDayNumber(Math.floor(lo));
+  for (let y = p.y, m = p.m; ; ) {
+    const d = dayNumber({ y, m, d: 1, wd: 0 });
+    if (d > hi) break;
+    if (d >= lo && (m - 1) % months === 0) out.push(d);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+const dayTick = (d: number) => { const p = fromDayNumber(d); return p.d !== 1 ? `${p.d} ${MONTH_NAMES[p.m - 1]}` : p.m === 1 ? String(p.y) : MONTH_NAMES[p.m - 1]!; };
+
+/** Year-to-date lines (one per year, the latest highlighted) and weekly bars, like Strava's progress charts. */
 function progressSection(acts: Activity[]): HTMLElement {
   const m = VOL[state.volMetric];
   const u = m.unit();
-  const years = yearsOf(acts).slice(0, 5);
+  const years = yearsOf(acts).slice(0, 6);
   const byYear = new Map<number, number[]>(years.map((y) => [y, new Array<number>(367).fill(0)]));
   for (const a of acts) {
     const p = parts(a.startMs, state.tz);
@@ -510,31 +611,73 @@ function progressSection(acts: Activity[]): HTMLElement {
     for (let d = 1; d <= end; d++) { acc += arr[d]!; pts.push([d, acc]); }
     return { name: String(y), cls: i === 0 ? 's-main' : i === 1 ? 's-compare' : 's-faint', points: pts, endLabel: i < 3 };
   });
-  // hover follows the longest line, so a part-year still reads against full ones
-  const ordered = [...series].sort((a, b) => b.points.length - a.points.length);
   const doyLabel = (d: number) => { const dt = new Date(Date.UTC(2001, 0, d)); return `${dt.getUTCDate()} ${MONTH_NAMES[dt.getUTCMonth()]}`; };
+  const doyTicks = (lo: number, hi: number) => { const ms = MONTH_START_DOY.filter((d) => d >= lo && d <= hi); return hi - lo > 200 ? ms.filter((_, i) => i % 2 === 0) : ms.length >= 3 ? ms : [lo, (lo + hi) / 2, hi].map(Math.round); };
   const ytd = h('figure', { class: 'card chart-card' },
-    h('div', { class: 'chart-head' }, h('h3', {}, `${m.name} year to date (${u})`), legendOf(series.map((x) => [x.name, x.cls]))),
-    xyChart({ series: ordered, label: `Cumulative ${m.name.toLowerCase()} per year`, xTicks: MONTH_START_DOY.filter((_, i) => i % 2 === 0), fmtX: (d) => MONTH_NAMES[MONTH_START_DOY.indexOf(d)] ?? doyLabel(d), tipX: (d) => `Up to ${doyLabel(d)}`, fmtY: (v) => `${m.fmt(v)}`, yZero: true }));
+    h('div', { class: 'chart-head' }, h('h3', {}, `${m.name} year to date (${u})`)),
+    chartBox({ key: `ytd-${state.volMetric}`, series, hidden: years.slice(3).map(String), label: `Cumulative ${m.name.toLowerCase()} per year`, xTicks: doyTicks, fmtX: (d) => (MONTH_START_DOY.includes(d) ? MONTH_NAMES[MONTH_START_DOY.indexOf(d)]! : doyLabel(d)), tipX: (d) => `Up to ${doyLabel(d)}`, fmtY: (v) => `${m.fmt(v)}`, yZero: true }));
 
-  const weeks = byPeriod(acts, 'week', state.tz).slice(-26);
-  const bars: Bar[] = weeks.map((w) => ({
-    label: `${MONTH_NAMES[Number(w.start.slice(5, 7)) - 1]} ${Number(w.start.slice(8))}`,
-    value: m.of(w.summary),
-    tip: [`${m.fmt(m.of(w.summary))} ${u}`, plural(w.summary.count, 'activity', 'activities'), w.summary.count ? `${dist(w.summary.distanceM)} ${distanceUnit(state.units)} · ${formatHours(w.summary.movingS)}` : 'Rest week'],
-    selected: selectedIn('weeks') === w.key,
-    onClick: w.summary.count ? () => { state.pick = selectedIn('weeks') === w.key ? null : { table: 'weeks', key: w.key, title: `Week from ${w.start}`, sel: { kind: 'week', value: w.key } }; render(); } : undefined,
-  }));
-  const recent = weeks.slice(-5, -1).map((w) => m.of(w.summary));
-  const thisWeek = weeks.length ? m.of(weeks[weeks.length - 1]!.summary) : 0;
-  const avg4 = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
+  const span = curSpan(acts);
+  const weeks = weeksOf(acts, span);
+  const grouped = byWeekStart(acts);
+  const val = (d: number) => (grouped.get(d) ?? []).reduce((x, a) => x + m.raw(a), 0);
+  const bars: Bar[] = weeks.map((d) => {
+    const w = grouped.get(d) ?? [];
+    const key = weekKeyOf(d);
+    const dsum = w.reduce((x, a) => x + a.distanceM, 0), tsum = w.reduce((x, a) => x + a.movingS, 0);
+    return {
+      label: weekLabel(d), value: val(d),
+      tip: [weekRange(d), `${m.fmt(val(d))} ${u}`, w.length ? `${plural(w.length, 'activity', 'activities')} · ${dist(dsum)} ${distanceUnit(state.units)} · ${formatHours(tsum)}` : 'Rest week'],
+      selected: selectedIn('weeks') === key,
+      onClick: w.length ? () => { state.pick = selectedIn('weeks') === key ? null : { table: 'weeks', key, title: `Week ${weekRange(d)}`, sel: { kind: 'week', value: key } }; render(); } : undefined,
+    };
+  });
+  const vals = weeks.map(val);
+  const total = vals.reduce((a, b) => a + b, 0);
+  const note = span === 'recent' && vals.length > 1
+    ? `Last week of the data: ${m.fmt(vals[vals.length - 1]!)} ${u} · 4-week average before it: ${m.fmt(vals.slice(-5, -1).reduce((a, b) => a + b, 0) / Math.max(1, vals.slice(-5, -1).length))} ${u}`
+    : `${m.fmt(total)} ${u} in ${weeks.length} weeks · ${m.fmt(total / Math.max(1, weeks.length))} ${u} a week on average`;
   const weekly = h('figure', { class: 'card chart-card' },
-    h('div', { class: 'chart-head' }, h('h3', {}, `${m.name} per week (${u})`),
-      h('span', { class: 'muted small' }, `Last week of the data: ${m.fmt(thisWeek)} ${u} · 4-week average before it: ${m.fmt(avg4)} ${u}`)),
-    barChart({ bars, label: `${m.name} per week, last 26 weeks. Select a bar to list its activities`, fmtY: m.fmt, labelEvery: 4 }));
+    h('div', { class: 'chart-head' }, h('h3', {}, `${m.name} per week (${u})`), weekSpanControl(acts, 'Weeks shown')),
+    h('p', { class: 'muted small' }, note),
+    barChart({ bars, label: `${m.name} per week. Select a bar to list its activities`, fmtY: m.fmt, labelEvery: Math.max(1, Math.ceil(weeks.length / 9)) }));
   return h('div', {},
     h('div', { class: 'h2row' }, h('h2', { id: 'progress' }, 'Progress'), metricTabs('Measure shown in the progress charts')),
+    goalCard(acts),
     h('div', { class: 'charts' }, ytd, weekly), drill('weeks', acts));
+}
+
+// ---------- goals ----------
+
+/** A distance, time or climbing target for the current week, month or year, with a progress bar. */
+function goalCard(acts: Activity[]): HTMLElement {
+  const g = state.goal;
+  const periodSel = h('select', { 'aria-label': 'Goal period' }, ...(['week', 'month', 'year'] as const).map((p) => h('option', { value: p, selected: g?.period === p }, `This ${p}`)));
+  const metricSel = h('select', { 'aria-label': 'Goal measure' }, ...(['distance', 'time', 'elevation'] as const).map((k) => h('option', { value: k, selected: (g?.metric ?? 'distance') === k }, VOL[k].name)));
+  const targetIn = h('input', { type: 'number', min: 1, step: 'any', value: g?.target ?? '', placeholder: 'target', 'aria-label': 'Goal target' });
+  const form = h('form', { class: 'row', 'aria-label': 'Set a goal', onsubmit: (e) => {
+    e.preventDefault();
+    const t = Number(targetIn.value);
+    state.goal = t > 0 ? { period: periodSel.value as 'week', metric: metricSel.value as 'distance', target: t } : null;
+    render();
+  } }, h('b', {}, 'Goal'), periodSel, metricSel, targetIn, h('span', { class: 'muted small' }, g ? VOL[g.metric].unit() : ''), h('button', { type: 'submit' }, g ? 'Update' : 'Set'),
+    g ? h('button', { type: 'button', class: 'link', onclick: () => { state.goal = null; render(); } }, 'Clear') : null);
+  const card = h('div', { class: 'card goal' }, form);
+  if (!g) { card.append(h('p', { class: 'muted small' }, 'Set a target for this week, month or year (as of your last activity). It is kept until you close the tab.')); return card; }
+  const m = VOL[g.metric];
+  const lp = parts(Math.max(...acts.map((a) => a.startMs)), state.tz);
+  const today = dayNumber(lp);
+  const start = g.period === 'week' ? weekStart(lp) : g.period === 'month' ? dayNumber({ ...lp, d: 1 }) : dayNumber({ y: lp.y, m: 1, d: 1, wd: 0 });
+  const end = g.period === 'week' ? start + 7 : g.period === 'month' ? dayNumber(lp.m === 12 ? { y: lp.y + 1, m: 1, d: 1, wd: 0 } : { y: lp.y, m: lp.m + 1, d: 1, wd: 0 }) : dayNumber({ y: lp.y + 1, m: 1, d: 1, wd: 0 });
+  const done = acts.filter((a) => { const d = dayNumber(parts(a.startMs, state.tz)); return d >= start && d < end; }).reduce((x, a) => x + m.raw(a), 0);
+  const elapsed = (today - start + 1) / (end - start);
+  const frac = Math.min(1, done / g.target);
+  const bar = h('div', { class: 'goal-bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': g.target, 'aria-valuenow': Math.round(done), 'aria-label': `Goal progress` }, h('i', {}), h('b', { class: 'goal-mark', title: 'Where you would be on an even pace' }));
+  (bar.firstChild as HTMLElement).style.setProperty('--w', `${frac * 100}%`);
+  (bar.lastChild as HTMLElement).style.setProperty('--x', `${Math.min(1, elapsed) * 100}%`);
+  const ahead = done - g.target * elapsed;
+  card.append(bar, h('p', { class: 'small' }, `${m.fmt(done)} of ${m.fmt(g.target)} ${m.unit()} (${fmt(frac * 100, 0)} %) · ${fmt(elapsed * 100, 0)} % of the ${g.period} gone · ${done >= g.target ? 'Done!' : ahead >= 0 ? `${m.fmt(ahead)} ${m.unit()} ahead of an even pace` : `${m.fmt(-ahead)} ${m.unit()} behind an even pace; ${m.fmt((g.target - done) / Math.max(1, end - today - 1))} ${m.unit()} a day to finish`}`));
+  return card;
 }
 
 /** Months of the selected year as bars above the month table; a bar selects the same row. */
@@ -551,35 +694,101 @@ function monthBars(acts: Activity[], months: { key: string; label: string; summa
 
 // ---------- training load ----------
 
-const thresholds = (): Thresholds => ({ ftp: state.ftp, lthr: lthrOf(state.hr) });
+/** Distance of one pace unit (km or mile) in metres. */
+const paceUnitM = () => (state.units === 'metric' ? 1000 : 1609.344);
+/** "4:30" (per km or mile) from a speed in m/s. */
+const paceOf = (mps: number) => formatDuration(paceUnitM() / mps);
+/** Speed (m/s) from "4:30" or "4:30:00"-style text per km/mile; null if unreadable. */
+function parsePace(text: string): number | null {
+  const m = /^\s*(\d{1,2}):([0-5]\d)\s*$/.exec(text);
+  if (!m) return null;
+  const secs = Number(m[1]) * 60 + Number(m[2]);
+  return secs >= 120 && secs <= 1200 ? paceUnitM() / secs : null;
+}
 
-/** Heart-rate and FTP settings, shared by zones, training load and the activity pages. */
+const thresholds = (): Thresholds => {
+  const all = state.result?.activities ?? [];
+  return {
+    ftp: state.ftp, lthr: lthrOf(state.hr), pace: state.pace,
+    maxHr: state.hr?.mode === 'maxHr' ? state.hr.value : observedMaxHr(all),
+    restHr: state.restHr, trimpK: state.sex === 'f' ? 1.67 : 1.92, history: state.history,
+  };
+};
+
+/** Heart-rate, FTP, pace and weight settings, shared by zones, training load and the activity pages. */
 function thresholdForm(all: Activity[]): HTMLElement {
-  const hrIn = h('input', { type: 'number', min: 100, max: 230, value: state.hr?.value ?? '', 'aria-label': 'Heart-rate value in bpm' });
+  const num = (attrs: Record<string, string | number>, value: number | null | undefined, label: string) =>
+    h('input', { type: 'number', ...attrs, value: value ?? '', 'aria-label': label });
+  const hrIn = num({ min: 100, max: 230 }, state.hr?.value, 'Heart-rate value in bpm');
   const modeSel = h('select', { 'aria-label': 'Zone basis' },
     h('option', { value: 'maxHr', selected: state.hr?.mode === 'maxHr' }, 'Max HR'),
     h('option', { value: 'lthr', selected: state.hr?.mode === 'lthr' }, 'Threshold HR'));
-  const ftpIn = h('input', { type: 'number', min: 50, max: 600, value: state.ftp ?? '', placeholder: 'e.g. 250', 'aria-label': 'FTP in watts' });
-  const form = h('form', { class: 'row card', 'aria-label': 'Your thresholds', onsubmit: (e) => {
+  const restIn = num({ min: 30, max: 100, placeholder: '60' }, state.restHr, 'Resting heart rate in bpm');
+  const sexSel = h('select', { 'aria-label': 'Heart-rate model' },
+    h('option', { value: 'm', selected: state.sex === 'm' }, 'Male'), h('option', { value: 'f', selected: state.sex === 'f' }, 'Female'));
+  const ftpIn = num({ min: 50, max: 600, placeholder: 'e.g. 250' }, state.ftp, 'FTP in watts');
+  const paceIn = h('input', { type: 'text', inputmode: 'numeric', size: 5, placeholder: '4:30', value: state.pace ? paceOf(state.pace) : '', 'aria-label': `Threshold pace in minutes per ${distanceUnit(state.units)}` });
+  const kgIn = num({ min: 30, max: 200, step: 0.1, placeholder: 'kg' }, state.weight, 'Body weight in kg');
+  const msg = h('p', { class: 'small warn', role: 'status' });
+  const form = h('form', { class: 'card thresholds', 'aria-label': 'Your thresholds', onsubmit: (e) => {
     e.preventDefault();
     const v = Number(hrIn.value);
     if (v >= 100 && v <= 230) state.hr = { mode: modeSel.value as HrZoneConfig['mode'], value: v };
     const f = Number(ftpIn.value);
     state.ftp = f >= 50 && f <= 600 ? f : null;
+    const r = Number(restIn.value);
+    state.restHr = r >= 30 && r <= 100 ? r : null;
+    state.sex = sexSel.value === 'f' ? 'f' : 'm';
+    const k = Number(kgIn.value);
+    state.weight = k >= 30 && k <= 200 ? k : null;
+    if (paceIn.value.trim() && !parsePace(paceIn.value)) { msg.textContent = 'Write the threshold pace as minutes:seconds, e.g. 4:30.'; return; }
+    state.pace = paceIn.value.trim() ? parsePace(paceIn.value) : null;
     render();
   } },
-    h('label', {}, 'Heart rate from', modeSel, hrIn, 'bpm'),
-    h('label', {}, 'FTP', ftpIn, 'W'), h('button', { type: 'submit' }, 'Apply'));
+    h('div', { class: 'row' },
+      h('label', {}, 'Heart rate from', modeSel, hrIn, 'bpm'),
+      h('label', {}, 'Resting HR', restIn, 'bpm'),
+      h('label', {}, 'HR model', sexSel)),
+    h('div', { class: 'row' },
+      h('label', {}, 'FTP', ftpIn, 'W'),
+      h('label', {}, 'Threshold pace', paceIn, `/${distanceUnit(state.units)}`),
+      h('label', {}, 'Weight', kgIn, 'kg'),
+      h('button', { type: 'submit', class: 'primary' }, 'Apply')), msg);
   const out = h('div', {}, form);
-  if (state.hr && observedMaxHr(all) === state.hr.value && state.hr.mode === 'maxHr') {
-    out.append(h('p', { class: 'small' }, `Max HR defaults to the highest value in your data (${state.hr.value} bpm). Set your own, or your threshold HR, for more accurate zones and load.`));
-  }
+  const notes: (Node | string)[] = [];
+  if (state.hr && observedMaxHr(all) === state.hr.value && state.hr.mode === 'maxHr') notes.push(`Max HR defaults to the highest value in your data (${state.hr.value} bpm). Set your own, or your threshold HR, for more accurate zones and load. `);
   const est = estimateFtp(bestPowerCurve(lastYear(all.filter((a) => a.powerCurve))));
-  if (est && est !== state.ftp) {
-    out.append(h('p', { class: 'small' }, `Estimated FTP from your best 20 minutes in the last 12 months: ${est} W. `,
-      h('button', { class: 'link', onclick: () => { state.ftp = est; render(); } }, `Use ${est} W`)));
-  }
+  if (est && est !== state.ftp) notes.push(`Estimated FTP (95 % of your best 20 minutes, last 12 months): ${est} W. `, h('button', { type: 'button', class: 'link', onclick: () => { state.ftp = est; render(); } }, `Use ${est} W`), ' ');
+  const runs = lastYear(all.filter((a) => RUN_LIKE.has(a.sport) && a.sport !== 'Walk' && a.paceCurve));
+  const estPace = estimateThresholdPace(bestPaceCurve(runs));
+  if (estPace && (!state.pace || Math.abs(estPace - state.pace) > 0.01)) notes.push(`Estimated threshold pace (your best 30 minutes running, last 12 months): ${paceOf(estPace)} /${distanceUnit(state.units)}. `, h('button', { type: 'button', class: 'link', onclick: () => { state.pace = estPace; render(); } }, `Use ${paceOf(estPace)}`));
+  if (notes.length) out.append(h('p', { class: 'small' }, ...notes));
+  out.append(historyForm());
   return out;
+}
+
+/** Earlier thresholds, so older activities are scored with the FTP, threshold HR and pace of their day. */
+function historyForm(): HTMLElement {
+  const rows = [...state.history].sort((a, b) => b.untilMs - a.untilMs);
+  const dateIn = h('input', { type: 'date', 'aria-label': 'Until this date' });
+  const ftpIn = h('input', { type: 'number', min: 50, max: 600, placeholder: 'W', 'aria-label': 'Earlier FTP in watts' });
+  const hrIn = h('input', { type: 'number', min: 100, max: 230, placeholder: 'bpm', 'aria-label': 'Earlier threshold HR in bpm' });
+  const paceIn = h('input', { type: 'text', size: 5, placeholder: '4:45', 'aria-label': `Earlier threshold pace per ${distanceUnit(state.units)}` });
+  const add = h('form', { class: 'row', 'aria-label': 'Add an earlier threshold', onsubmit: (e) => {
+    e.preventDefault();
+    const ms = Date.parse(`${dateIn.value}T00:00:00Z`);
+    if (!Number.isFinite(ms)) return;
+    const f = Number(ftpIn.value), l = Number(hrIn.value), pc = parsePace(paceIn.value);
+    const c: ThresholdChange = { untilMs: ms, ftp: f >= 50 && f <= 600 ? f : null, lthr: l >= 100 && l <= 230 ? l : null, pace: pc };
+    if (!c.ftp && !c.lthr && !c.pace) return;
+    state.history = [...state.history.filter((x) => x.untilMs !== ms), c];
+    render();
+  } }, h('label', {}, 'Before', dateIn), h('label', {}, 'FTP', ftpIn), h('label', {}, 'Threshold HR', hrIn), h('label', {}, 'Pace', paceIn), h('button', { type: 'submit' }, 'Add'));
+  return h('details', { class: 'history', open: rows.length > 0 }, h('summary', {}, `Earlier thresholds${rows.length ? ` (${rows.length})` : ''}`),
+    h('p', { class: 'small' }, 'Like TrainingPeaks, training stress uses the thresholds of each activity’s day. Add the values you had before a date; everything after the newest entry uses the ones above. Zones always use the current values.'),
+    rows.length ? h('div', { class: 'card scroll' }, table(['Before', 'FTP', 'Threshold HR', 'Threshold pace', ''], rows.map((c) => [ymd(parts(c.untilMs, 'UTC')), c.ftp ? `${c.ftp} W` : dash, c.lthr ? `${c.lthr} bpm` : dash, c.pace ? `${paceOf(c.pace)} /${distanceUnit(state.units)}` : dash,
+      h('button', { class: 'link', 'aria-label': `Remove the entry before ${ymd(parts(c.untilMs, 'UTC'))}`, onclick: () => { state.history = state.history.filter((x) => x !== c); render(); } }, 'Remove')]), { numCols: [1, 2, 3] })) : null,
+    add);
 }
 
 /** Activities in the 365 days up to the last one. */
@@ -591,16 +800,19 @@ function lastYear(acts: Activity[]): Activity[] {
 
 const dayLabel = (d: number) => { const p = fromDayNumber(d); return `${p.d} ${MONTH_NAMES[p.m - 1]} ${p.y}`; };
 
+/** Sport colours (categorical series tokens c0…c5), stable per sport across charts. */
+const sportClass = (sports: string[], sp: string) => `c${Math.max(0, sports.indexOf(sp)) % 6}`;
+
 function trainingSection(all: Activity[], acts: Activity[]): HTMLElement {
   const sec = h('div', {}, h('div', { class: 'h2row' }, h('h2', { id: 'training' }, 'Training load')), thresholdForm(all));
   const t = thresholds();
-  if (!t.ftp && !t.lthr) {
-    sec.append(h('p', {}, 'Set your FTP or heart rate above to see your training stress, fitness, fatigue and form.'));
+  if (!t.ftp && !t.lthr && !t.pace) {
+    sec.append(h('p', {}, 'Set your FTP, heart rate or threshold pace above to see your training stress, fitness, fatigue and form.'));
     return sec;
   }
   const load = trainingLoad(acts, t, state.tz);
   if (!load.days.length) {
-    sec.append(h('p', {}, 'None of these activities has power or heart-rate data, so there is no training stress to show.'));
+    sec.append(h('p', {}, 'None of these activities has power, pace or heart-rate data that can be scored, so there is no training stress to show.'));
     return sec;
   }
   const last = load.days[load.days.length - 1]!;
@@ -615,94 +827,244 @@ function trainingSection(all: Activity[], acts: Activity[]): HTMLElement {
       tile(`${tomorrowForm > 0 ? '+' : ''}${fmt(tomorrowForm, 0)}`, 'Form (TSB)', fl.advice, fl.label),
       ramp !== null ? tile(`${ramp > 0 ? '+' : ''}${fmt(ramp, 1)}`, 'Fitness change, last 7 days', 'Ramp rate. More than about +8 a week is hard to sustain.') : null));
 
-  const range = state.loadRange === 'all' ? load.days : load.days.slice(-Number(state.loadRange));
-  const step = range.length > 400 ? 3 : 1; // keep the path light on long histories
-  const pts = (f: (d: typeof last) => number): [number, number][] => range.filter((_, i) => i % step === 0 || i === range.length - 1).map((d) => [d.day, Math.round(f(d) * 10) / 10]);
-  const firstDay = range[0]!.day, lastDay = range[range.length - 1]!.day;
-  const monthTicks: number[] = [];
-  for (let p = fromDayNumber(firstDay), y = p.y, mo = p.m; ; mo === 12 ? (y++, (mo = 1)) : mo++) {
-    const d = dayNumber({ y, m: mo, d: 1, wd: 0 });
-    if (d > lastDay) break;
-    if (d >= firstDay) monthTicks.push(d);
+  // fitness by sport (each sport's own 42-day average), when more than one sport carries load
+  const sports = sportsOf(acts);
+  const bySport = sports.map((sp) => { const l = trainingLoad(acts.filter((a) => a.sport === sp), t, state.tz); const d = l.days[l.days.length - 1]; return { sp, ctl: d && d.day === last.day ? d.ctl : d ? d.ctl * Math.pow(41 / 42, last.day - d.day) : 0 }; }).filter((x) => x.ctl >= 0.5);
+  if (bySport.length > 1) {
+    sec.append(h('p', { class: 'small' }, 'Fitness by sport: ', ...bySport.flatMap((x, i) => [i ? ' · ' : '', h('span', { class: `sport-dot ${sportClass(sports, x.sp)}` }), ` ${x.sp} ${fmt(x.ctl, 0)}`])));
   }
-  const every = Math.max(1, Math.ceil(monthTicks.length / 6));
-  const rangeBtn = (v: State['loadRange'], text: string) => h('button', { 'aria-pressed': String(state.loadRange === v), onclick: () => { state.loadRange = v; render(); } }, text);
-  const tssOn = new Map(range.map((d) => [d.day, d.tss]));
+
+  // performance management chart: everything is drawn, the period buttons and dragging pick the view
+  const firstDay = load.days[0]!.day, lastDay = last.day;
+  const preset = (n: number | 'all'): [number, number] | null => (n === 'all' || lastDay - n + 1 <= firstDay ? null : [lastDay - n + 1, lastDay]);
+  const same = (a: [number, number] | null, b: [number, number] | null) => (a === null ? b === null : b !== null && a[0] === b[0] && a[1] === b[1]);
+  const rangeBtns: [HTMLButtonElement, number | 'all'][] = [];
+  const rangeBtn = (n: number | 'all', text: string) => { const b = h('button', { 'aria-pressed': String(same(chartView('pmc'), preset(n))), onclick: () => { setChartView('pmc', preset(n)); render(); } }, text); rangeBtns.push([b, n]); return b; };
+  const pts = (f: (d: typeof last) => number): [number, number][] => load.days.map((d) => [d.day, Math.round(f(d) * 10) / 10]);
+  const tssOn = new Map(load.days.map((d) => [d.day, d.tss]));
+  const inView = h('p', { class: 'muted small', 'aria-live': 'polite' });
+  const describeView = (dom: [number, number] | null) => {
+    for (const [b, n] of rangeBtns) b.setAttribute('aria-pressed', String(same(dom, preset(n))));
+    const ds = load.days.filter((d) => !dom || (d.day >= dom[0] && d.day <= dom[1]));
+    if (!ds.length) { inView.textContent = ''; return; }
+    const tss = ds.reduce((x, d) => x + d.tss, 0);
+    const a = ds[0]!, b = ds[ds.length - 1]!;
+    inView.textContent = `${dayLabel(a.day)} – ${dayLabel(b.day)}: ${fmt(tss, 0)} TSS in ${plural(ds.filter((d) => d.tss > 0).length, 'training day')} (${fmt((tss / ds.length) * 7, 0)} a week) · fitness ${fmt(a.ctl, 0)} → ${fmt(b.ctl, 0)} · lowest form ${fmt(Math.min(...ds.map((d) => d.tsb)), 0)}`;
+  };
+  if (!pmcInit.has(state.result!)) { pmcInit.add(state.result!); setChartView('pmc', preset(365)); }
+  const pmcView = chartView('pmc');
   sec.append(h('figure', { class: 'card chart-card' },
     h('div', { class: 'chart-head' }, h('h3', {}, 'Fitness, fatigue and form'),
-      h('div', { class: 'seg', role: 'group', 'aria-label': 'Period shown in the fitness chart' }, rangeBtn('90', '90 days'), rangeBtn('365', '1 year'), rangeBtn('all', 'All'))),
-    legendOf([['Fitness', 's-fitness'], ['Fatigue', 's-fatigue'], ['Form', 's-form']]),
-    xyChart({
-      label: 'Fitness, fatigue and form per day', height: 240, zeroLine: true,
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Period shown in the fitness chart' }, rangeBtn(42, '6 weeks'), rangeBtn(90, '90 days'), rangeBtn(365, '1 year'), rangeBtn('all', 'All'))),
+    chartBox({
+      key: 'pmc', label: 'Fitness, fatigue and form per day', height: 240, zeroLine: true, xDomain: pmcView, hidden: ['Daily TSS'],
       series: [
         { name: 'Fitness', cls: 's-fitness', points: pts((d) => d.ctl) },
         { name: 'Fatigue', cls: 's-fatigue', points: pts((d) => d.atl) },
         { name: 'Form', cls: 's-form', points: pts((d) => d.tsb), area: true },
+        { name: 'Daily TSS', cls: 's-faint', points: load.days.filter((d) => d.tss > 0).map((d) => [d.day, Math.round(d.tss)]), dots: true },
       ],
-      xTicks: monthTicks.filter((_, i) => i % every === 0),
-      fmtX: (d) => { const p = fromDayNumber(d); return p.m === 1 || every >= 12 ? String(p.y) : MONTH_NAMES[p.m - 1]!; },
+      xTicks: dayTicks, fmtX: dayTick,
       tipX: (d) => `${dayLabel(d)} · ${fmt(tssOn.get(d) ?? 0, 0)} TSS that day`,
       fmtY: (v) => fmt(v, 0),
-    })));
+      onView: describeView,
+    }), inView));
 
-  // weekly stress, last 26 weeks
-  const weeks = new Map<string, { start: string; tss: number; n: number }>();
-  for (const w of byPeriod(acts, 'week', state.tz).slice(-26)) weeks.set(w.key, { start: w.start, tss: 0, n: 0 });
-  for (const a of acts) {
-    const l = activityLoad(a, t);
-    const k = isoWeekOf(a.startMs);
-    const w = weeks.get(k);
-    if (l && w) { w.tss += l.tss; w.n++; }
-  }
-  sec.append(h('figure', { class: 'card chart-card' }, h('div', { class: 'chart-head' }, h('h3', {}, 'Training stress per week (TSS)')),
-    barChart({ label: 'Training stress per week, last 26 weeks', fmtY: (v) => fmt(v, 0), labelEvery: 4,
-      bars: [...weeks.entries()].map(([key, w]) => ({ label: `${MONTH_NAMES[Number(w.start.slice(5, 7)) - 1]} ${Number(w.start.slice(8))}`, value: Math.round(w.tss),
-        tip: [`${fmt(w.tss, 0)} TSS`, plural(w.n, 'activity', 'activities') + ' with load'],
-        selected: selectedIn('weeks-tss') === key,
-        onClick: w.n ? () => { state.pick = selectedIn('weeks-tss') === key ? null : { table: 'weeks-tss', key, title: `Week from ${w.start}`, sel: { kind: 'week', value: key } }; render(); } : undefined })) })),
-    drill('weeks-tss', acts) ?? '');
+  // weekly stress, stacked by sport
+  const span = curSpan(acts);
+  const weeks = weeksOf(acts, span);
+  const grouped = byWeekStart(acts);
+  const loadSports = sports.filter((sp) => acts.some((a) => a.sport === sp && activityLoad(a, t)));
+  const bars: Bar[] = weeks.map((d) => {
+    const w = (grouped.get(d) ?? []).map((a) => ({ a, l: activityLoad(a, t) })).filter((x) => x.l);
+    const per = loadSports.map((sp) => w.filter((x) => x.a.sport === sp).reduce((s, x) => s + x.l!.tss, 0));
+    const total = per.reduce((a, b) => a + b, 0);
+    const key = weekKeyOf(d);
+    return { label: weekLabel(d), value: Math.round(total), parts: loadSports.length > 1 ? per.map((v, i) => ({ value: v, cls: sportClass(sports, loadSports[i]!) })) : undefined,
+      tip: [weekRange(d), `${fmt(total, 0)} TSS`, ...loadSports.map((sp, i) => (per[i]! > 0 ? `${sp}: ${fmt(per[i]!, 0)}` : '')).filter(Boolean), plural(w.length, 'activity', 'activities') + ' with load'],
+      selected: selectedIn('weeks-tss') === key,
+      onClick: w.length ? () => { state.pick = selectedIn('weeks-tss') === key ? null : { table: 'weeks-tss', key, title: `Week ${weekRange(d)}`, sel: { kind: 'week', value: key } }; render(); } : undefined };
+  });
+  sec.append(h('figure', { class: 'card chart-card' }, h('div', { class: 'chart-head' }, h('h3', {}, 'Training stress per week (TSS)'), weekSpanControl(acts, 'Weeks shown')),
+    loadSports.length > 1 ? h('ul', { class: 'chart-legend static' }, ...loadSports.map((sp) => h('li', { class: sportClass(sports, sp) }, h('i', {}), sp))) : null,
+    barChart({ label: 'Training stress per week', fmtY: (v) => fmt(v, 0), labelEvery: Math.max(1, Math.ceil(weeks.length / 9)), bars })),
+  drill('weeks-tss', acts) ?? '');
 
-  const parts1: string[] = [];
-  if (load.fromPower) parts1.push(`${load.fromPower} from power`);
-  if (load.fromHr) parts1.push(`${load.fromHr} estimated from heart rate`);
-  sec.append(h('p', { class: 'small' }, `Training stress (TSS) counted for ${parts1.join(' and ')}${load.without ? `; ${plural(load.without, 'activity', 'activities')} without power or heart rate add nothing` : ''}. 100 TSS is about one hour flat out at threshold.${t.lthr && state.hr?.mode === 'maxHr' ? ` Threshold HR is estimated as 90 % of max HR (${t.lthr} bpm).` : ''}`),
-    h('details', {}, h('summary', {}, 'How to read this'),
-      h('dl', { class: 'explain card' },
-        h('dt', {}, 'Training stress (TSS)'), h('dd', {}, 'How hard one activity was, combining duration and intensity. An easy hour is around 40–60, an hour at your limit is 100. With power and an FTP it uses normalized power; otherwise it is estimated from heart rate against your threshold heart rate (hrTSS).'),
-        h('dt', {}, 'Fitness'), h('dd', {}, 'A rolling average of your daily TSS over about 42 days. It is the long-term trend: higher means you have been training more.'),
-        h('dt', {}, 'Fatigue'), h('dd', {}, 'The same average over about 7 days: what the last week has taken out of you.'),
-        h('dt', {}, 'Form'), h('dd', {}, 'Fitness minus fatigue. Between about −10 and −30 you are building; above +5 you are fresh for an event; below −30 you risk overdoing it.'))));
+  const src: string[] = [];
+  if (load.fromPower) src.push(`${load.fromPower} from power`);
+  if (load.fromPace) src.push(`${load.fromPace} from pace (rTSS)`);
+  if (load.fromHr) src.push(`${load.fromHr} from heart rate (hrTSS)`);
+  sec.append(h('p', { class: 'small' }, `Training stress counted for ${src.join(', ')}${load.without ? `; ${plural(load.without, 'activity', 'activities')} without usable data add nothing` : ''}. 100 TSS is about one hour flat out at threshold.${t.lthr && state.hr?.mode === 'maxHr' ? ` Threshold HR is estimated as 90 % of max HR (${t.lthr} bpm).` : ''}${!state.restHr && load.fromHr ? ' Resting HR is taken as 60 bpm until you set yours.' : ''}`));
+
+  sec.append(efficiencySection(acts));
+  sec.append(calendarSection(acts, t));
+  sec.append(h('details', {}, h('summary', {}, 'How to read this, and how it is worked out'),
+    h('dl', { class: 'explain card' },
+      h('dt', {}, 'Training stress (TSS)'), h('dd', {}, 'How hard one activity was, combining duration and intensity: hours × intensity factor² × 100, so an hour at threshold is 100 and an easy hour 40–60. With power and an FTP the intensity factor is normalized power ÷ FTP (TrainingPeaks TSS). Runs without power use normalized graded pace ÷ threshold pace (rTSS): every second’s speed is adjusted for the gradient with Minetti’s energy cost of running, then averaged like normalized power. Otherwise it comes from heart rate (hrTSS): TrainingPeaks does not publish its heart-rate table, so this uses the TRIMP-based score of intervals.icu and Golden Cheetah, which weights each second exponentially by heart-rate reserve (needs resting and max HR) and gives 100 for an hour at threshold heart rate.'),
+      h('dt', {}, 'Fitness (CTL)'), h('dd', {}, 'An exponentially weighted average of your daily TSS with a 42-day time constant, rest days counted as 0: each day, fitness moves 1/42 of the way toward that day’s TSS. It is the long-term trend.'),
+      h('dt', {}, 'Fatigue (ATL)'), h('dd', {}, 'The same with a 7-day time constant: what the last week or two has taken out of you.'),
+      h('dt', {}, 'Form (TSB)'), h('dd', {}, 'Yesterday’s fitness minus yesterday’s fatigue (the TrainingPeaks convention). Between about −10 and −30 you are building; above +5 you are fresh for an event; below −30 you risk overdoing it.'),
+      h('dt', {}, 'Zooming'), h('dd', {}, 'Drag across a chart to zoom into that stretch, or focus it and press + and −. Names above a chart show and hide their lines; “Daily TSS” adds each day’s stress as dots.'))));
   return sec;
+}
+const pmcInit = new WeakSet<object>();
+
+/** Efficiency factor over time (TrainingPeaks' EF trend): rising output per heartbeat = better aerobic fitness. */
+function efficiencySection(acts: Activity[]): HTMLElement | string {
+  const pts = acts.map((a) => ({ a, e: efficiencyFactor(a) })).filter((x) => x.e);
+  if (pts.length < 5) return '';
+  const kinds = (['power', 'pace'] as const).filter((k) => pts.filter((x) => x.e!.kind === k).length >= 5);
+  const charts = kinds.map((k) => {
+    const mine = pts.filter((x) => x.e!.kind === k).sort((x, y) => x.a.startMs - y.a.startMs);
+    const dots: [number, number][] = mine.map((x) => [dayNumber(parts(x.a.startMs, state.tz)), Math.round(x.e!.ef * 100) / 100]);
+    // monthly median, drawn at mid-month
+    const months = new Map<string, number[]>();
+    for (const x of mine) { const key = monthKey(parts(x.a.startMs, state.tz)); (months.get(key) ?? months.set(key, []).get(key)!).push(x.e!.ef); }
+    const med: [number, number][] = [...months.entries()].sort().map(([key, v]) => { const s = [...v].sort((p, q) => p - q); return [dayNumber({ y: Number(key.slice(0, 4)), m: Number(key.slice(5)), d: 15, wd: 0 }), Math.round(s[s.length >> 1]! * 100) / 100]; });
+    const byDay = new Map(mine.map((x) => [dayNumber(parts(x.a.startMs, state.tz)), x.a]));
+    return h('figure', { class: 'card chart-card' },
+      h('div', { class: 'chart-head' }, h('h3', {}, k === 'power' ? 'Efficiency factor: normalized watts per heartbeat' : `Efficiency factor: metres per minute (graded) per heartbeat`)),
+      chartBox({ key: `ef-${k}-${state.sport}`, label: `Efficiency factor of each ${k === 'power' ? 'ride with power' : 'run'}, and the monthly median`,
+        series: [{ name: 'Monthly median', cls: 's-main', points: med }, { name: k === 'power' ? 'Each activity' : 'Each run', cls: 's-faint', points: dots, dots: true }],
+        xTicks: dayTicks, fmtX: dayTick, tipX: dayLabel, fmtY: (v) => fmt(v, 2),
+        tipExtra: (name, x) => (name.startsWith('Each') ? byDay.get(x)?.name ?? null : null),
+        onPick: (x) => { const a = byDay.get(x); if (a) openActivity(a.id); } }));
+  });
+  return h('div', {}, h('h3', {}, 'Aerobic efficiency'),
+    h('p', { class: 'small' }, 'Efficiency factor (TrainingPeaks): output per heartbeat for activities of 20 minutes or more. On similar easy sessions, a rising line means your aerobic fitness is improving. Hard intervals and heat make single points jump, so watch the monthly median.'),
+    h('div', { class: 'charts' }, ...charts));
+}
+
+// ---------- training calendar ----------
+
+function calendarSection(acts: Activity[], t: Thresholds): HTMLElement {
+  const months = [...new Set(acts.map((a) => monthKey(parts(a.startMs, state.tz))))].sort();
+  const cur = state.calMonth && months.includes(state.calMonth) ? state.calMonth : months[months.length - 1]!;
+  const i = months.indexOf(cur);
+  const y = Number(cur.slice(0, 4)), m = Number(cur.slice(5));
+  const first = dayNumber({ y, m, d: 1, wd: 0 });
+  const next = dayNumber(m === 12 ? { y: y + 1, m: 1, d: 1, wd: 0 } : { y, m: m + 1, d: 1, wd: 0 });
+  const byDay = new Map<number, Activity[]>();
+  for (const a of acts) { const d = dayNumber(parts(a.startMs, state.tz)); if (d >= first - 7 && d < next + 7) (byDay.get(d) ?? byDay.set(d, []).get(d)!).push(a); }
+  const u = state.units;
+  const go = (k: number) => { state.calMonth = months[k]!; render(); document.getElementById('calendar')?.scrollIntoView({ block: 'nearest' }); };
+  const head = h('div', { class: 'chart-head' }, h('h3', { id: 'calendar' }, 'Training calendar'),
+    h('div', { class: 'span-pick', role: 'group', 'aria-label': 'Month shown' },
+      h('button', { 'aria-label': 'Previous month with activities', disabled: i <= 0, onclick: () => go(i - 1) }, '‹'),
+      h('select', { 'aria-label': 'Month shown', onchange: (e) => { state.calMonth = (e.target as HTMLSelectElement).value; render(); } }, ...[...months].reverse().map((k) => h('option', { value: k, selected: k === cur }, monthTitle(k)))),
+      h('button', { 'aria-label': 'Next month with activities', disabled: i >= months.length - 1, onclick: () => go(i + 1) }, '›')));
+  const grid = h('div', { class: 'cal', role: 'table', 'aria-label': `Training calendar, ${monthTitle(cur)}` });
+  grid.append(h('div', { class: 'cal-row cal-head', role: 'row' }, ...['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Week'].map((d) => h('span', { role: 'columnheader' }, d))));
+  const maxTss = 200;
+  for (let w = weekStart(fromDayNumber(first)); w < next; w += 7) {
+    const row = h('div', { class: 'cal-row', role: 'row' });
+    let wd = 0, ws = 0, wt = 0;
+    for (let d = w; d < w + 7; d++) {
+      const p = fromDayNumber(d);
+      const list = byDay.get(d) ?? [];
+      const tss = list.reduce((x, a) => x + (activityLoad(a, t)?.tss ?? 0), 0);
+      wd += list.reduce((x, a) => x + a.distanceM, 0); ws += list.reduce((x, a) => x + a.movingS, 0); wt += tss;
+      const cell = h('div', { class: `cal-day${d < first || d >= next ? ' out' : ''}${list.length ? ' has' : ''}`, role: 'cell' },
+        h('span', { class: 'cal-date' }, String(p.d)),
+        ...list.map((a) => { const l = activityLoad(a, t); return h('button', { class: `cal-act ${sportClass(sportsOf(acts), a.sport)}`, title: `${a.name} · ${dateOf(a.startMs)}`, onclick: () => openActivity(a.id) },
+          h('b', {}, a.distanceM > 0 ? `${dist(a.distanceM)} ${distanceUnit(u)}` : formatDuration(a.movingS)), l ? h('span', { class: 'cal-tss' }, ` ${fmt(l.tss, 0)}`) : '', h('span', { class: 'sr-only' }, ` ${a.sport}`)); }));
+      if (tss > 0) cell.style.setProperty('--load', String(Math.min(1, tss / maxTss)));
+      row.append(cell);
+    }
+    row.append(h('div', { class: 'cal-week', role: 'cell' }, wd ? h('b', {}, `${dist(wd)} ${distanceUnit(u)}`) : '', ws ? h('span', {}, formatHours(ws)) : '', wt ? h('span', {}, `${fmt(wt, 0)} TSS`) : ''));
+    grid.append(row);
+  }
+  return h('div', {}, head, h('div', { class: 'card cal-card' }, grid), h('p', { class: 'muted small' }, 'Each activity shows its distance (or time) and training stress; darker days carried more stress. Select one to open it.'));
 }
 
 const isoWeekOf = (ms: number) => isoWeekKey(parts(ms, state.tz));
+void isoWeekOf;
 
-// ---------- power curve and best efforts ----------
+// ---------- mean-maximal curves and best efforts ----------
+
+/** Log-axis duration ticks for a visible range: up to about 8 round durations. */
+function durationTicks(lo: number, hi: number): number[] {
+  const cand = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 10800, 18000, 36000].filter((d) => d >= lo * 0.999 && d <= hi * 1.001);
+  const out: number[] = [];
+  const gap = Math.log(hi / lo) / 8;
+  for (const d of cand) if (!out.length || Math.log(d / out[out.length - 1]!) >= gap * 0.9) out.push(d);
+  return out;
+}
+const durTick = (s: number) => durationName(s).replace(' min', 'm').replace(' s', 's').replace(' h ', 'h').replace(' h', 'h');
+
+const CURVES: Record<State['curveKind'], { name: string; best: (acts: Activity[]) => CurvePoint[]; has: (a: Activity) => boolean; fmt: (v: number) => string; unit: () => string }> = {
+  power: { name: 'Power', best: (a) => bestPowerCurve(a), has: (a) => !!a.powerCurve, fmt: (v) => fmt(v, 0), unit: () => 'W' },
+  hr: { name: 'Heart rate', best: bestHrCurve, has: (a) => !!a.hrCurve, fmt: (v) => fmt(v, 0), unit: () => 'bpm' },
+  pace: { name: 'Pace', best: bestPaceCurve, has: (a) => !!a.paceCurve && RUN_LIKE.has(a.sport), fmt: (v) => (v > 0.3 ? paceOf(v) : dash), unit: () => `/${distanceUnit(state.units)}` },
+};
 
 function curveSection(acts: Activity[]): HTMLElement {
-  const sec = h('div', {}, h('h2', { id: 'curve' }, 'Power curve and best efforts'));
-  const withPower = acts.filter((a) => a.powerCurve);
+  const sec = h('div', {}, h('h2', { id: 'curve' }, 'Curves and best efforts'));
   const byId = new Map(acts.map((a) => [a.id, a]));
   const actLink = (id: string) => { const a = byId.get(id)!; return h('button', { class: 'link', onclick: () => openActivity(a.id) }, a.name); };
-  if (withPower.length) {
-    const allTime = bestPowerCurve(withPower);
-    const recent = bestPowerCurve(lastYear(withPower));
-    const showRecent = recent.length && withPower.length !== lastYear(withPower).length;
+  const kinds = (Object.keys(CURVES) as State['curveKind'][]).filter((k) => acts.some(CURVES[k].has));
+  if (kinds.length) {
+    const kind = kinds.includes(state.curveKind) ? state.curveKind : kinds[0]!;
+    const c = CURVES[kind];
+    let subset = acts.filter(c.has);
+    let sportPick: HTMLElement | null = null;
+    if (kind === 'pace') {
+      const sps = sportsOf(subset);
+      const sp = state.curveSport && sps.includes(state.curveSport) ? state.curveSport : sps[0]!;
+      subset = subset.filter((a) => a.sport === sp);
+      if (sps.length > 1) sportPick = selectControl('Sport', sp, sps.map((x): [string, string] => [x, x]), (v) => { state.curveSport = v; state.curvePick = null; });
+    }
+    const allTime = c.best(subset), recentActs = lastYear(subset), recent = c.best(recentActs);
+    const showRecent = recent.length > 0 && subset.length !== recentActs.length;
+    const curves = new Map<string, CurvePoint[]>([['All time', allTime]]);
     const series: XYSeries[] = [{ name: 'All time', cls: 's-compare', points: allTime.map((p) => [p.seconds, p.watts]) }];
-    if (showRecent) series.unshift({ name: 'Last 12 months', cls: 's-main', points: recent.map((p) => [p.seconds, p.watts]), area: true });
-    const curves = [showRecent ? recent : allTime, allTime];
-    const ticks = [1, 5, 30, 60, 300, 1200, 3600, 7200, 18000].filter((d) => d <= allTime[allTime.length - 1]!.seconds * 1.01);
+    if (showRecent) { series.unshift({ name: 'Last 12 months', cls: 's-main', points: recent.map((p) => [p.seconds, p.watts]), area: kind === 'power' }); curves.set('Last 12 months', recent); }
+    const cp = kind === 'power' ? criticalPower(showRecent ? recent : allTime) : null;
+    if (cp) series.push({ name: 'CP model', cls: 's-faint', dash: true, points: CURVE_POINTS.filter((d) => d >= 120 && d <= allTime[allTime.length - 1]!.seconds).map((d) => [d, Math.round(cp.cp + cp.wPrime / d)]) });
+    const maxS = allTime[allTime.length - 1]!.seconds;
+    const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'Curve shown' }, ...kinds.map((k) => h('button', { 'aria-pressed': String(k === kind), onclick: () => { state.curveKind = k; state.curvePick = null; render(); } }, CURVES[k].name)));
+    const pointAt = (name: string, x: number) => curves.get(name)?.find((p) => p.seconds === x);
     sec.append(h('figure', { class: 'card chart-card' },
-      h('div', { class: 'chart-head' }, h('h3', {}, 'Best power for every duration (W)'), series.length > 1 ? legendOf(series.map((x) => [x.name, x.cls])) : null),
-      xyChart({ series, log: true, label: 'Power curve: best average power for each duration. Select a point to open the activity that set it', xTicks: ticks, fmtX: (s) => durationName(s).replace(' min', 'm').replace(' s', 's').replace(' h', 'h'), tipX: (s) => `Best ${durationName(s)}`, fmtY: (v) => `${fmt(v, 0)}`, yZero: true,
-        tipExtra: (k, j) => { const p = curves[k]?.[j]; return p ? `${dateOf(p.startMs)}` : null; },
-        onPick: (i) => { const p = curves[0]![i]; if (p) openActivity(p.activityId); } })),
-      h('p', { class: 'small' }, `From ${plural(withPower.length, 'activity', 'activities')} with a power meter. Each point is the highest average power you held for that long in one go.${estimateFtp(recent) ? ` Your best 20 minutes in the last 12 months suggest an FTP of about ${estimateFtp(recent)} W.` : ''}`));
-    const keyD = [5, 60, 300, 1200, 3600];
+      h('div', { class: 'chart-head' }, h('h3', {}, kind === 'pace' ? `Best pace for every duration (${c.unit()})` : `Best ${c.name.toLowerCase()} for every duration (${c.unit()})`), h('div', { class: 'row' }, sportPick, tabs)),
+      chartBox({ key: `curve-${kind}-${state.sport}`, series, log: true, label: `${c.name} curve: best average for each duration. Select a point to see the activity that set it`, xTicks: durationTicks, fmtX: durTick, tipX: (s) => `Best ${durationName(s)}`,
+        fmtY: c.fmt, yZero: kind === 'power',
+        tipExtra: (name, x) => { const p = pointAt(name, x); return p ? `${byId.get(p.activityId)?.name ?? ''} · ${dateOf(p.startMs)}` : null; },
+        onPick: (x) => { state.curvePick = { kind, x }; render(); document.getElementById('list-curve')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } }),
+      h('p', { class: 'small' }, `From ${plural(subset.length, 'activity', 'activities')}. Each point is the highest average you held for that long in one go${kind === 'hr' ? ' (heart rate lags effort, so short durations read low)' : ''}. Drag across the chart to zoom in; select a point to see the activity behind it.`)));
+    const pick = state.curvePick?.kind === kind ? state.curvePick : null;
+    if (pick) {
+      const found = [...curves.entries()].map(([name, cv]) => ({ name, p: cv.find((q) => q.seconds === pick.x) })).filter((x) => x.p);
+      const ids = [...new Set(found.map((x) => x.p!.activityId))];
+      const title = `Best ${durationName(pick.x)}: ${found.map((x) => `${c.fmt(x.p!.watts)} ${c.unit()} ${found.length > 1 ? `(${x.name.toLowerCase()})` : ''}`.trim()).join(', ')}`;
+      sec.append(activityPanel('list-curve', title, ids.map((id) => byId.get(id)!).filter(Boolean), {
+        units: state.units, tz: state.tz, tiles: tileSource(state.mapTiles), open: openActivity,
+        close: () => { state.curvePick = null; render(); },
+      }));
+    }
+    const keyD = kind === 'pace' ? [60, 300, 1200, 1800, 3600] : kind === 'hr' ? [60, 300, 1200, 3600] : [5, 60, 300, 1200, 3600];
     const rows = keyD.map((d) => ({ d, a: allTime.find((p) => p.seconds === d), r: recent.find((p) => p.seconds === d) })).filter((x) => x.a);
-    sec.append(h('div', { class: 'card scroll' }, table(['Duration', 'All time (W)', 'Set on', ...(showRecent ? ['Last 12 months (W)'] : []), ...(state.ftp ? ['% of FTP'] : [])],
-      rows.map(({ d, a, r }) => [durationName(d), fmt(a!.watts, 0), h('span', {}, actLink(a!.activityId), ` (${dateOf(a!.startMs)})`), ...(showRecent ? [r ? fmt(r.watts, 0) : dash] : []), ...(state.ftp ? [`${fmt((a!.watts / state.ftp) * 100, 0)} %`] : [])]), { numCols: [1, 3, 4] })));
-  } else sec.append(h('p', {}, 'No activities with a power meter, so there is no power curve.'));
+    const wkg = kind === 'power' && state.weight;
+    const pctOf = kind === 'power' ? state.ftp : kind === 'hr' ? thresholds().lthr : null;
+    sec.append(h('div', { class: 'card scroll' }, table(['Duration', `All time (${c.unit()})`, 'Set on', ...(showRecent ? [`Last 12 months (${c.unit()})`] : []), ...(wkg ? ['W/kg'] : []), ...(pctOf ? [kind === 'power' ? '% of FTP' : '% of threshold HR'] : [])],
+      rows.map(({ d, a, r }) => [durationName(d), c.fmt(a!.watts), h('span', {}, actLink(a!.activityId), ` (${dateOf(a!.startMs)})`), ...(showRecent ? [r ? c.fmt(r.watts) : dash] : []), ...(wkg ? [fmt(a!.watts / state.weight!, 2)] : []), ...(pctOf ? [`${fmt((a!.watts / pctOf) * 100, 0)} %`] : [])]), { numCols: [1, 3, 4, 5] })));
+    if (kind === 'power') {
+      const est = estimateFtp(recent.length ? recent : allTime);
+      const tile = (v: string, l: string, help: string) => h('div', { class: 'stat' }, h('b', {}, v), h('span', {}, l), h('small', {}, help));
+      sec.append(h('div', { class: 'grid' },
+        est ? tile(`${est} W`, 'estimated FTP', '95 % of your best 20 minutes (last 12 months).') : null,
+        cp ? tile(`${cp.cp} W`, 'critical power (CP)', 'From your best 3 to 20 minute efforts: the power you could hold for a long time. Usually a little above FTP.') : null,
+        cp ? tile(`${fmt(cp.wPrime / 1000, 1)} kJ`, 'W′ (anaerobic capacity)', 'The energy you can spend above CP before you have to back off.') : null,
+        state.weight && (state.ftp || est) ? tile(`${fmt((state.ftp ?? est!) / state.weight, 2)} W/kg`, 'FTP per kilogram', 'What decides how fast you climb.') : null));
+      const peakD = [5, 60, 300, 1200, 3600];
+      const peaks = peaksBy(subset, (a) => String(parts(a.startMs, state.tz).y), peakD);
+      if (peaks.length > 1) {
+        const bestCol = peakD.map((_, i) => Math.max(...peaks.map((p) => p.best[i]?.watts ?? 0)));
+        sec.append(h('h3', {}, 'Peak power by year'), h('div', { class: 'card scroll' }, table(['Year', ...peakD.map(durationName)],
+          peaks.map((p) => [p.key, ...p.best.map((b, i) => (b ? h('span', { class: b.watts === bestCol[i] ? 'best' : '', title: `${byId.get(b.activityId)?.name ?? ''} (${dateOf(b.startMs)})` }, `${fmt(b.watts, 0)} W`) : dash))]), { numFrom: 1 })),
+        h('p', { class: 'muted small' }, 'Your best power for each duration in each year, like TrainingPeaks’ peak-power table; the best year for each is bold.'));
+      }
+    }
+  } else sec.append(h('p', {}, 'No power, heart-rate or pace streams, so there are no curves.'));
 
   const sports = (state.sport === 'all' ? sportsOf(acts) : [state.sport]).filter((sp) => acts.some((a) => a.sport === sp && a.bestEfforts)).slice(0, 3);
   for (const sp of sports) {
@@ -722,7 +1084,8 @@ function curveSection(acts: Activity[]): HTMLElement {
   if (sports.length) sec.append(h('p', { class: 'small' }, 'Fastest elapsed time over each distance anywhere inside an activity, from the GPS or sensor distance in the files.'));
   return sec;
 }
-const PACE_SPORTS = new Set(['Run', 'Walk', 'Hike']);
+const PACE_SPORTS = new Set(['Run', 'Walk', 'Hike', 'Trail Run', 'Virtual Run']);
+const CURVE_POINTS = CURVE_DURATIONS;
 
 // ---------- posters ----------
 
@@ -740,6 +1103,7 @@ function posterOpts(acts: Activity[]): PosterOptions {
   if (o.worldYear !== 'all' && !years.includes(o.worldYear)) o.worldYear = 'all';
   if (o.circleYear !== 'all' && !years.includes(o.circleYear)) o.circleYear = 'all';
   if (o.spaceYear !== 'all' && !years.includes(o.spaceYear)) o.spaceYear = 'all';
+  if (o.bloomYear !== 'all' && !years.includes(o.bloomYear)) o.bloomYear = 'all';
   if (o.facetYear !== 'all' && !years.includes(o.facetYear)) o.facetYear = 'all';
   if (o.overlayYear !== 'all' && !years.includes(o.overlayYear)) o.overlayYear = 'all';
   if (!o.todYear || !years.includes(o.todYear)) o.todYear = years[0] ?? null;
@@ -801,7 +1165,10 @@ function posterSettings(t: PosterType, acts: Activity[], after?: (el: HTMLElemen
       pick('Period', String(o.overlayYear), [['all', 'All time'], ...years], (v) => (poster.overlayYear = v === 'all' ? 'all' : Number(v))),
       hideEnds(),
       ...regionControl(t, acts, poster.overlayRegions, (c) => (poster.overlayRegions = c), after)];
-    case 'calendar': case 'rings': case 'cumulative': return [pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v))];
+    case 'bloom': return [
+      pick('Period', String(o.bloomYear), [['all', 'All time'], ...years], (v) => (poster.bloomYear = v === 'all' ? 'all' : Number(v))),
+      pick('Symmetry', String(poster.bloomSymmetry), [['1', 'None'], ['3', '3-fold'], ['6', '6-fold'], ['8', '8-fold']], (v) => (poster.bloomSymmetry = Number(v)))];
+    case 'calendar': case 'rings': case 'cumulative': case 'stream': case 'spiral': return [pick('Measure', poster.calendarMetric, [['distance', 'Distance'], ['time', 'Time']], (v) => (poster.calendarMetric = v))];
     case 'circles': return [
       pick('Period', String(o.circleYear), [['all', 'All time'], ...years], (v) => (poster.circleYear = v === 'all' ? 'all' : Number(v))),
       pick('Clusters', poster.circleGroup, [['none', 'One pack'], ['year', 'One per year'], ['sport', 'One per sport']], (v) => (poster.circleGroup = v)),
@@ -1053,25 +1420,72 @@ function zoneTable(title: string, zones: Zone[], rows: (ZoneRow & { label?: stri
   return table(head, body, { numFrom: 1, id: pick?.id, selected: pick ? selectedIn(pick.id) : null });
 }
 
-function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: Zone[] | null): HTMLElement {
-  const sec = h('div', {}, h('h2', { id: 'zones' }, 'Time in zones'),
-    h('p', {}, 'Zones come from the heart rate and FTP set under ', h('a', { href: '#training' }, 'Training load'), '.'));
-  void all;
+/** Periods for the zone summaries: all time, the last 12 months, each year. */
+function zoneSpanControl(acts: Activity[]): HTMLElement {
+  const years = yearsOf(acts);
+  const cur = zoneSpanOf(acts);
+  const btn = (v: string, text: string) => h('button', { 'aria-pressed': String(cur === v), onclick: () => { state.zoneSpan = v; render(); } }, text);
+  return h('div', { class: 'seg years', role: 'group', 'aria-label': 'Period of the zone summaries' }, btn('all', 'All time'), btn('recent', 'Last 12 months'), ...years.map((y) => btn(String(y), String(y))));
+}
+const zoneSpanOf = (acts: Activity[]) => (state.zoneSpan === 'all' || state.zoneSpan === 'recent' || yearsOf(acts).includes(Number(state.zoneSpan)) ? state.zoneSpan : 'all');
+function inZoneSpan(acts: Activity[]): { acts: Activity[]; label: string } {
+  const sp = zoneSpanOf(acts);
+  if (sp === 'all') return { acts, label: 'All time' };
+  if (sp === 'recent') return { acts: lastYear(acts), label: 'Last 12 months of the data' };
+  return { acts: acts.filter((a) => parts(a.startMs, state.tz).y === Number(sp)), label: sp };
+}
 
-  const block = (stream: 'hr' | 'power', zones: Zone[] | null, noun: string, hint: string) => {
-    sec.append(h('h3', {}, stream === 'hr' ? 'Heart rate' : 'Power'));
-    const total = zoneTotals(acts, stream, zones ?? []);
+/** Low / moderate / high split of time (Seiler's three zones), as intervals.icu and TrainingPeaks summarise polarisation. */
+function intensitySplit(seconds: number[], zones: Zone[]): HTMLElement {
+  const n = zones.length;
+  // Seiler's low / moderate / high. 5 max-HR zones: Z1-3 (<80 %) | Z4 | Z5 (>=90 %);
+  // 7 Friel or Coggan zones: Z1-2 (below 90 % LTHR / 75 % FTP) | Z3-4 | Z5 and up
+  const lowEnd = n === 5 ? 3 : 2, midEnd = n === 5 ? 4 : 4;
+  const sum = (a: number, b: number) => seconds.slice(a, b).reduce((x, y) => x + y, 0);
+  const parts3 = [sum(0, lowEnd), sum(lowEnd, midEnd), sum(midEnd, n)];
+  const total = parts3.reduce((x, y) => x + y, 0) || 1;
+  const names = ['Low', 'Moderate', 'High'];
+  const bar = h('div', { class: 'zbar split', role: 'img', 'aria-label': `Intensity distribution: ${parts3.map((v, i) => `${names[i]} ${fmt((v / total) * 100, 0)} %`).join(', ')}` },
+    ...parts3.map((v, i) => { const el = h('i', { title: `${names[i]}: ${hm(v)} (${fmt((v / total) * 100, 0)} %)` }); el.style.width = `${(v / total) * 100}%`; el.style.background = ZONE_COLORS[[1, 3, 4][i]!]!; return el; }));
+  const share = (i: number) => fmt((parts3[i]! / total) * 100, 0);
+  return h('div', { class: 'split-row' }, h('span', { class: 'small' }, h('b', {}, 'Intensity mix '), `Low ${share(0)} % · Moderate ${share(1)} % · High ${share(2)} %`), bar,
+    h('span', { class: 'muted small' }, mixAdvice(parts3[0]! / total, parts3[1]! / total, parts3[2]! / total)));
+}
+function mixAdvice(low: number, mid: number, high: number): string {
+  if (low >= 0.7 && high >= mid) return 'Polarised: mostly easy with some hard work, the mix most endurance coaches aim for (about 80 % easy).';
+  if (low >= 0.7) return 'Pyramidal: mostly easy, then less moderate, then least hard. A common, sound mix.';
+  if (high > 0.4) return 'Mostly hard. Plenty of intensity; more easy time usually builds endurance with less fatigue.';
+  return 'A lot of moderate (“grey zone”) time: tiring, but less effective than clearly easy or clearly hard sessions.';
+}
+
+function zonesSection(all: Activity[], acts: Activity[], hz: Zone[] | null, pz: Zone[] | null): HTMLElement {
+  const sec = h('div', {}, h('div', { class: 'h2row' }, h('h2', { id: 'zones' }, 'Time in zones'), zoneSpanControl(acts)),
+    h('p', {}, 'Zones come from the heart rate, FTP and threshold pace set under ', h('a', { href: '#training' }, 'Training load'), '.',
+      state.hr?.mode === 'lthr' ? ` Heart-rate zones are Joe Friel’s seven zones from threshold HR (${RUN_LIKE.has(state.sport) ? 'running' : 'cycling'} table), as TrainingPeaks uses them.` : ''));
+  void all;
+  const span = inZoneSpan(acts);
+  const paceZ = state.pace ? paceZones(state.pace) : null;
+  const block = (stream: 'hr' | 'power' | 'pace', zones: Zone[] | null, noun: string, hint: string) => {
+    sec.append(h('h3', {}, stream === 'hr' ? 'Heart rate' : stream === 'power' ? 'Power' : 'Pace (runs)'));
+    const pool = stream === 'pace' ? acts.filter((a) => RUN_LIKE.has(a.sport)) : acts;
+    const spanPool = stream === 'pace' ? span.acts.filter((a) => RUN_LIKE.has(a.sport)) : span.acts;
     if (!zones) { sec.append(h('p', {}, hint)); return; }
-    if (!total.withData) { sec.append(h('p', {}, `None of these activities has ${noun} data, so there is nothing to show.`)); return; }
-    sec.append(h('div', { class: 'card' }, zoneRows(zones, total.seconds, stream === 'hr' ? 'bpm' : 'W'),
-      h('p', { class: 'small' }, `All time, from ${total.withData} of ${plural(total.count, 'activity', 'activities')} (the others have no ${noun} data).`)));
+    const total = zoneTotals(spanPool, stream, zones);
+    if (!zoneTotals(pool, stream, zones).withData) { sec.append(h('p', {}, `None of these activities has ${noun} data, so there is nothing to show.`)); return; }
+    const unit = stream === 'hr' ? 'bpm' : stream === 'power' ? 'W' : '';
+    const range = stream === 'pace' ? (z: Zone) => `${z.lower === 0 ? `slower than ${paceOf(z.upper! / 10)}` : z.upper === null ? `faster than ${paceOf(z.lower / 10)}` : `${paceOf(z.upper / 10)}–${paceOf(z.lower / 10)}`} /${distanceUnit(state.units)}` : undefined;
+    sec.append(h('div', { class: 'card' }, total.withData ? zoneRows(zones, total.seconds, unit, range) : h('p', {}, `No ${noun} data in this period.`),
+      total.withData && stream !== 'pace' ? intensitySplit(total.seconds, zones) : null,
+      h('p', { class: 'small' }, `${span.label}, from ${total.withData} of ${plural(total.count, stream === 'pace' ? 'run' : 'activity', stream === 'pace' ? 'runs' : 'activities')} (the others have no ${noun} data).`)));
+    if (stream === 'pace') return;
     append(sec, [h('div', { class: 'card' }, zoneTable('Year', zones, zonesBy(acts, stream, zones, 'year', state.tz), noun, { id: `${stream}-year`, kind: 'year' })), drill(`${stream}-year`, acts)]);
     const months = monthRows(zonesBy(acts, stream, zones, 'month', state.tz), acts);
     sec.append(h('details', { open: state.pick?.table === `${stream}-month` }, h('summary', {}, 'By month'), h('div', { class: 'row' }, yearTabs(acts, `Year shown in the ${noun} month table`)),
       h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, zoneTable('Month', zones, months, noun, { id: `${stream}-month`, kind: 'month' })), drill(`${stream}-month`, acts)));
   };
   block('hr', hz, 'heart-rate', 'No heart-rate data found in this export.');
-  block('power', pz, 'power', 'Enter your FTP above to see power zones (only activities with a power stream are counted).');
+  block('power', pz, 'power', 'Enter your FTP under Training load to see power zones (only activities with a power stream are counted).');
+  if (acts.some((a) => RUN_LIKE.has(a.sport) && a.speedHist)) block('pace', paceZ, 'pace', 'Enter your threshold pace under Training load to see Joe Friel’s pace zones for your runs.');
   return sec;
 }
 

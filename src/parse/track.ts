@@ -41,12 +41,26 @@ export interface TrackSummary {
   splits: Activity['splits'];
   np: number | null;
   powerCurve: [number, number][] | null;
+  hrCurve: [number, number][] | null;
+  paceCurve: [number, number][] | null;
+  ngp: number | null;
+  speedHist: [number, number][] | null;
   bestEfforts: [number, number][] | null;
   decoupling: number | null;
 }
 
-/** Durations (s) of the power curve: the points TrainingPeaks, Strava and intervals.icu all show. */
-export const CURVE_DURATIONS = [1, 5, 10, 15, 30, 60, 120, 180, 300, 480, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000];
+/**
+ * Durations (s) of the mean-maximal curves (power, heart rate, pace): every second up to 20 s, then
+ * steps that grow with the duration (about 120 points up to 10 h), so the curve reads as continuous on
+ * a log axis, like the TrainingPeaks and intervals.icu power-duration charts.
+ */
+export const CURVE_DURATIONS: number[] = (() => {
+  const out: number[] = [];
+  const add = (from: number, to: number, step: number) => { for (let d = from; d <= to; d += step) out.push(d); };
+  add(1, 20, 1); add(25, 60, 5); add(70, 120, 10); add(135, 300, 15); add(330, 600, 30); add(660, 1200, 60);
+  add(1320, 3600, 120); add(3900, 7200, 300); add(7800, 18000, 600); add(19800, 36000, 1800);
+  return out;
+})();
 /** Distances (m) for best efforts: running classics plus cycling ones. Sports pick the ones that apply. */
 export const EFFORT_DISTANCES = [400, 1000, 1609.344, 5000, 10000, 20000, 21097.5, 40000, 42195, 50000, 100000, 160934.4];
 
@@ -69,8 +83,9 @@ export function perSecond(t: number[], v: number[], fill: number): number[] | nu
   return out.length ? out : null;
 }
 
-/** Highest average of any `d` consecutive values, for each duration that fits. */
-export function meanMax(xs: number[], durations: number[]): [number, number][] {
+/** Highest average of any `d` consecutive values, for each duration that fits (rounded to `digits`). */
+export function meanMax(xs: number[], durations: number[], digits = 0): [number, number][] {
+  const f = 10 ** digits;
   const pre = new Float64Array(xs.length + 1);
   for (let i = 0; i < xs.length; i++) pre[i + 1] = pre[i]! + xs[i]!;
   const out: [number, number][] = [];
@@ -78,7 +93,7 @@ export function meanMax(xs: number[], durations: number[]): [number, number][] {
     if (d > xs.length) break;
     let best = 0;
     for (let i = d; i <= xs.length; i++) { const s = pre[i]! - pre[i - d]!; if (s > best) best = s; }
-    out.push([d, Math.round(best / d)]);
+    out.push([d, Math.round((best / d) * f) / f]);
   }
   return out;
 }
@@ -93,6 +108,39 @@ export function normalizedPower(w: number[]): number | null {
     if (i >= 29) { sum += (acc / 30) ** 4; n++; }
   }
   return n ? Math.round((sum / n) ** 0.25 * 10) / 10 : null;
+}
+
+/** Minetti et al. (2002) energy cost of running on a gradient, J/kg/m; 3.6 on the flat. */
+export const minettiCost = (g: number) => 155.4 * g ** 5 - 30.4 * g ** 4 - 43.3 * g ** 3 + 46.3 * g ** 2 + 19.5 * g + 3.6;
+
+/**
+ * Normalized graded pace (TrainingPeaks' NGP), as a speed in m/s: every second's speed is scaled to the
+ * flat-ground speed of equal metabolic cost (Minetti's cost of running uphill and downhill), then the
+ * same 30 s rolling, 4th-power average as normalized power is applied. `dist` and `ele` are per-second
+ * cumulative distance (m) and elevation (m); a missing elevation counts as flat.
+ */
+export function normalizedGradedSpeed(dist: number[], ele: number[]): number | null {
+  const n = dist.length;
+  if (n < 60) return null;
+  const adj: number[] = new Array<number>(n).fill(0);
+  for (let k = 0; k < n; k++) {
+    const a = Math.max(0, k - 5), b = Math.min(n - 1, k + 5);
+    const dd = dist[b]! - dist[a]!;
+    const v = k > 0 ? Math.max(0, dist[k]! - dist[k - 1]!) : 0;
+    let g = 0;
+    if (dd > 10 && finite(ele[a]!) && finite(ele[b]!)) g = Math.max(-0.3, Math.min(0.3, (ele[b]! - ele[a]!) / dd));
+    adj[k] = v > 12 ? 0 : (v * minettiCost(g)) / 3.6;
+  }
+  const np = normalizedPower(adj);
+  return np === null ? null : Math.round(np * 1000) / 1000;
+}
+
+/** Carry the last finite value forward (and the first one backward) over NaN gaps. */
+function carry(xs: number[]): number[] {
+  const first = xs.find(finite);
+  if (first === undefined) return xs;
+  let last = first;
+  return xs.map((v) => (finite(v) ? (last = v) : last));
 }
 
 /**
@@ -300,15 +348,27 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
   const hrS = hr ? binAverage(xs, tr.hr.map((v) => (v >= 30 && v <= 250 ? v : NaN)), SERIES_POINTS, 0) : null;
   const pwS = pw && pw.max > 0 ? binAverage(xs, tr.power.map((v) => (v >= 0 && v <= 3000 ? v : NaN)), SERIES_POINTS, 0) : null;
 
-  // Per-second streams for normalized power, the power curve and decoupling.
+  // Per-second streams for normalized power, the mean-maximal curves, NGP and decoupling.
   const pw1 = pw && pw.max > 0 ? perSecond(tr.t, tr.power.map((v) => (v >= 0 && v <= 3000 ? v : NaN)), 0) : null;
   const hr1 = hr ? perSecond(tr.t, tr.hr.map((v) => (v >= 30 && v <= 250 ? v : NaN)), NaN) : null;
-  const sp1 = hr1 ? perSecond(tr.t, spd, NaN) : null;
+  const sp1 = cd.length > 1 ? perSecond(tr.t, spd, NaN) : null;
   const outStream = pw1 ?? sp1;
+  const dist1 = cd.length > 1 ? perSecond(tr.t, cum, NaN) : null;
+  const ele1 = dist1 ? perSecond(tr.t, tr.ele, NaN) : null;
+  let ngp: number | null = null;
+  if (dist1 && dist1.some(finite)) {
+    const dc = carry(dist1);
+    ngp = normalizedGradedSpeed(dc, ele1 ? carry(ele1) : dc.map(() => NaN));
+  }
+  const spH = histogram(spd.map((v) => v * 10), dur, 0, 400);
 
   return {
     np: pw1 ? normalizedPower(pw1) : null,
     powerCurve: pw1 ? meanMax(pw1, CURVE_DURATIONS) : null,
+    hrCurve: hr1 && hr1.some(finite) ? meanMax(carry(hr1), CURVE_DURATIONS) : null,
+    paceCurve: sp1 && sp1.some(finite) ? meanMax(sp1.map((v) => (finite(v) ? v : 0)), CURVE_DURATIONS, 2) : null,
+    ngp,
+    speedHist: spH && spH.max > 0 ? spH.hist : null,
     bestEfforts: times.length > 1 && cd.length > 1 ? bestEfforts(cum, tr.t, EFFORT_DISTANCES) : null,
     decoupling: outStream && hr1 ? decoupling(outStream, hr1) : null,
     startMs,

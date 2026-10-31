@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SERIES_POINTS } from '../src/types';
 import { parseActivitiesCsv } from '../src/parse/csv';
 import { parseCsvDate, clockLabel, hourOf } from '../src/util/time';
 import { importExport } from '../src/parse/pipeline';
@@ -59,12 +60,12 @@ describe('track series and splits', () => {
     expect(s.splits!.endM).toBeGreaterThan(2490);
     expect(s.splits!.endS).toBeCloseTo(250, 0);
   });
-  it('builds speed / hr / elevation series with 100 points', () => {
-    expect(s.series!.speed).toHaveLength(100);
+  it('builds speed / hr / elevation series with SERIES_POINTS points', () => {
+    expect(s.series!.speed).toHaveLength(SERIES_POINTS);
     expect(s.series!.speed![50]).toBeCloseTo(10, 0);
-    expect(s.series!.hr).toHaveLength(100);
+    expect(s.series!.hr).toHaveLength(SERIES_POINTS);
     expect(s.series!.power).toBeNull();
-    expect(s.profile).toHaveLength(100);
+    expect(s.profile).toHaveLength(SERIES_POINTS);
   });
   it('splitRows: per km with a partial last row, and per mile', () => {
     const a = act({ startMs: 0, sport: 'Run', splits: s.splits });
@@ -98,7 +99,7 @@ describe('new posters', () => {
     act({ startMs: Date.UTC(2024, 5, 3, 18, 0), distanceM: 20_000, movingS: 3600, sport: 'Ride' }),
   ];
   const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
-  it('all fifteen posters are listed', () => expect(POSTER_TYPES).toHaveLength(15));
+  it('all eighteen posters are listed', () => expect(POSTER_TYPES).toHaveLength(18));
   it('punch card has 168 slots and names the busiest one', () => {
     const p = renderPoster('punchcard', acts, opts());
     expect(count(p.svg, /<circle /g)).toBe(168);
