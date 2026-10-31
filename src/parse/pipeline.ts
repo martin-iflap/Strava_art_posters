@@ -60,6 +60,10 @@ function buildActivity(row: CsvActivity | null, tr: ParsedTrack | null, file: st
     profile: s?.profile ?? null,
     series: s?.series ?? null,
     splits: s?.splits ?? null,
+    np: s?.np ?? null,
+    powerCurve: s?.powerCurve ?? null,
+    bestEfforts: s?.bestEfforts ?? null,
+    decoupling: s?.decoupling ?? null,
     file,
   };
 }

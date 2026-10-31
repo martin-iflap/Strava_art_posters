@@ -5,7 +5,7 @@ import type { Activity } from '../src/types';
 
 const act = (id: string, lat: number, lon: number, startMs = 0, sport = 'Ride'): Activity => ({
   id, name: id, sport, startMs, distanceM: 1000, movingS: 600, elapsedS: 600, elevGainM: 0, maxSpeedMps: null, avgHr: null, maxHr: null,
-  avgPower: null, maxPower: null, avgCadence: null, hrHist: null, powerHist: null, route: [lat, lon, lat + 0.01, lon], profile: null, series: null, splits: null,
+  avgPower: null, maxPower: null, avgCadence: null, hrHist: null, powerHist: null, route: [lat, lon, lat + 0.01, lon], profile: null, series: null, splits: null, np: null, powerCurve: null, bestEfforts: null, decoupling: null,
 });
 
 describe('regions', () => {

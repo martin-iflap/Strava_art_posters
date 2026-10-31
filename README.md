@@ -2,7 +2,7 @@
 
 **Turn your Strava export into detailed stats and printable posters, privately, in your browser.**
 
-Drop in the ZIP that Strava gives you. Ride Atlas shows your totals by year, month, week, weekday and sport, records and streaks, time in heart-rate and power zones, your most-ridden routes, and a page for every activity. It also makes fifteen posters you can download as PNG or SVG. Nothing is uploaded: there is no server, no account and no tracking.
+Drop in the ZIP that Strava gives you. Ride Atlas shows your totals by year, month, week, weekday and sport, training load (fitness, fatigue and form), your power curve and best efforts, records and streaks, time in heart-rate and power zones, your most-ridden routes, and a page for every activity. It also makes fifteen posters you can download as PNG, JPEG or SVG. Nothing is uploaded: there is no server, no account and no tracking.
 
 ## Privacy and safety
 
@@ -27,9 +27,11 @@ No export yet? Click **Try with demo data**. The demo rider and their activities
 
 ## What you get
 
-- **Stats.** An overview, records and streaks, tables by sport, year, month, weekday and week, time in zones (set your max or threshold heart rate and FTP), most-ridden routes, a sortable activity list and an import report listing any skipped files and why. Click a row (a year, a sport, a record, a route) to list its activities.
-- **Activity pages.** A route map you can drag and zoom, elevation, speed, heart-rate and power charts with a shared hover readout, zones, per-km or per-mile splits, and how the activity ranks against your others and against repeats of the same route.
-- **Posters.** Route facets, all routes, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year, mountains climbed, around the world, time of day by weekday, landscape and to space. Choose a theme (light, dark, ember, aurora) and a size (A3 portrait, square, phone wallpaper), add an optional stats strip, tune each poster, and download one as PNG or SVG or all of them as a ZIP.
+- **Training load.** Training stress (TSS) for every activity, from power and FTP or estimated from heart rate, and the fitness / fatigue / form chart (CTL, ATL, TSB) with a plain-language reading. An FTP estimate from your best 20 minutes.
+- **Power curve and best efforts.** Your best power for every duration from 1 s to 5 h (all time against the last 12 months), and your fastest 1 km, 5 km, 10 km, half marathon … for runs, 10 km to 100 miles for rides.
+- **Stats.** An overview with year-to-date and weekly progress charts, records and streaks, tables by sport, year, month, weekday and week, time in zones (set your max or threshold heart rate and FTP), most-ridden routes, a sortable activity list and an import report listing any skipped files and why. Click a row (a year, a sport, a record, a route) to list its activities.
+- **Activity pages.** A route map you can drag and zoom, elevation, speed, heart-rate and power charts with a shared hover readout, effort numbers (TSS, intensity factor, normalized power, variability index, work, efficiency factor, aerobic decoupling), a power curve against your best, best efforts with PR badges, zones, per-km or per-mile splits, and how the activity ranks against your others and against repeats of the same route.
+- **Posters.** Route facets, all routes, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year, mountains climbed, around the world, time of day by weekday, landscape and to space. Choose a theme (light, dark, ember, aurora) and a size (A3 portrait, square, phone wallpaper), add an optional stats strip, tune each poster, and download one as PNG, JPEG or SVG or all of them as a ZIP.
 - **Exports.** Activities, monthly, yearly, sport and zone tables as CSV, or everything as JSON.
 - Filters for sport, km/mi and local/UTC time apply everywhere. Light and dark mode follow your system, with a manual switch. Browser Back and Forward work throughout.
 

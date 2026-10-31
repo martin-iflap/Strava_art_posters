@@ -39,6 +39,103 @@ export interface TrackSummary {
   profile: number[] | null;
   series: Activity['series'];
   splits: Activity['splits'];
+  np: number | null;
+  powerCurve: [number, number][] | null;
+  bestEfforts: [number, number][] | null;
+  decoupling: number | null;
+}
+
+/** Durations (s) of the power curve: the points TrainingPeaks, Strava and intervals.icu all show. */
+export const CURVE_DURATIONS = [1, 5, 10, 15, 30, 60, 120, 180, 300, 480, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000];
+/** Distances (m) for best efforts: running classics plus cycling ones. Sports pick the ones that apply. */
+export const EFFORT_DISTANCES = [400, 1000, 1609.344, 5000, 10000, 20000, 21097.5, 40000, 42195, 50000, 100000, 160934.4];
+
+/**
+ * Resample a stream to one value per second over the time the recording was running (pauses longer than
+ * MAX_GAP_S are left out, like auto-pause). Each sample's value holds until the next sample; missing
+ * values count as `fill`. Returns null without timestamps.
+ */
+export function perSecond(t: number[], v: number[], fill: number): number[] | null {
+  const out: number[] = [];
+  let carry = 0;
+  for (let i = 0; i < t.length - 1; i++) {
+    if (!finite(t[i]!) || !finite(t[i + 1]!)) continue;
+    const dt = (t[i + 1]! - t[i]!) / 1000;
+    if (!(dt > 0) || dt > MAX_GAP_S) continue;
+    carry += dt;
+    const val = finite(v[i]!) ? v[i]! : fill;
+    while (carry >= 1) { out.push(val); carry -= 1; }
+  }
+  return out.length ? out : null;
+}
+
+/** Highest average of any `d` consecutive values, for each duration that fits. */
+export function meanMax(xs: number[], durations: number[]): [number, number][] {
+  const pre = new Float64Array(xs.length + 1);
+  for (let i = 0; i < xs.length; i++) pre[i + 1] = pre[i]! + xs[i]!;
+  const out: [number, number][] = [];
+  for (const d of durations) {
+    if (d > xs.length) break;
+    let best = 0;
+    for (let i = d; i <= xs.length; i++) { const s = pre[i]! - pre[i - d]!; if (s > best) best = s; }
+    out.push([d, Math.round(best / d)]);
+  }
+  return out;
+}
+
+/** Normalized power (Coggan): 30 s rolling average, raised to the 4th power, averaged, 4th root. */
+export function normalizedPower(w: number[]): number | null {
+  if (w.length < 60) return null;
+  let sum = 0, acc = 0, n = 0;
+  for (let i = 0; i < w.length; i++) {
+    acc += w[i]!;
+    if (i >= 30) acc -= w[i - 30]!;
+    if (i >= 29) { sum += (acc / 30) ** 4; n++; }
+  }
+  return n ? Math.round((sum / n) ** 0.25 * 10) / 10 : null;
+}
+
+/**
+ * Fastest elapsed time to cover each distance anywhere in the activity (two pointers over the
+ * cumulative distance; the start of the window is interpolated so short distances are exact).
+ */
+export function bestEfforts(cum: number[], t: number[], distances: number[]): [number, number][] | null {
+  const idx: number[] = [];
+  for (let i = 0; i < cum.length; i++) if (finite(cum[i]!) && finite(t[i]!)) idx.push(i);
+  if (idx.length < 2) return null;
+  const c = idx.map((i) => cum[i]!), s = idx.map((i) => t[i]! / 1000);
+  const total = c[c.length - 1]! - c[0]!;
+  const out: [number, number][] = [];
+  for (const d of distances) {
+    if (d > total) break;
+    let best = Infinity, i = 0;
+    for (let j = 1; j < c.length; j++) {
+      if (c[j]! - c[0]! < d) continue;
+      while (i + 1 < j && c[j]! - c[i + 1]! >= d) i++;
+      // the window starts between sample i and i+1, at distance c[j] - d
+      const span = c[i + 1]! - c[i]!;
+      const f = span > 0 ? Math.min(1, Math.max(0, (c[j]! - d - c[i]!) / span)) : 0;
+      const dt = s[j]! - (s[i]! + f * (s[i + 1]! - s[i]!));
+      if (dt > 0 && dt < best) best = dt;
+    }
+    // GPS glitches can teleport: ignore anything faster than 30 m/s (108 km/h).
+    if (Number.isFinite(best) && d / best <= 30) out.push([Math.round(d * 10) / 10, Math.round(best)]);
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * Aerobic decoupling (Friel's Pa:HR / Pw:HR): output per heartbeat in the first half of the moving
+ * samples versus the second. Positive = HR drifted up for the same output.
+ */
+export function decoupling(out: number[], hr: number[]): number | null {
+  const pairs: [number, number][] = [];
+  for (let i = 0; i < out.length && i < hr.length; i++) if (out[i]! > 0 && hr[i]! >= 30) pairs.push([out[i]!, hr[i]!]);
+  if (pairs.length < 1200) return null;
+  const half = pairs.length >> 1;
+  const ef = (p: [number, number][]) => p.reduce((a, x) => a + x[0], 0) / p.reduce((a, x) => a + x[1], 0);
+  const e1 = ef(pairs.slice(0, half)), e2 = ef(pairs.slice(half));
+  return e1 > 0 ? Math.round(((e1 - e2) / e1) * 1000) / 10 : null;
 }
 
 /** Gaps longer than this between samples are treated as pauses and contribute no time. */
@@ -203,7 +300,17 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
   const hrS = hr ? binAverage(xs, tr.hr.map((v) => (v >= 30 && v <= 250 ? v : NaN)), SERIES_POINTS, 0) : null;
   const pwS = pw && pw.max > 0 ? binAverage(xs, tr.power.map((v) => (v >= 0 && v <= 3000 ? v : NaN)), SERIES_POINTS, 0) : null;
 
+  // Per-second streams for normalized power, the power curve and decoupling.
+  const pw1 = pw && pw.max > 0 ? perSecond(tr.t, tr.power.map((v) => (v >= 0 && v <= 3000 ? v : NaN)), 0) : null;
+  const hr1 = hr ? perSecond(tr.t, tr.hr.map((v) => (v >= 30 && v <= 250 ? v : NaN)), NaN) : null;
+  const sp1 = hr1 ? perSecond(tr.t, spd, NaN) : null;
+  const outStream = pw1 ?? sp1;
+
   return {
+    np: pw1 ? normalizedPower(pw1) : null,
+    powerCurve: pw1 ? meanMax(pw1, CURVE_DURATIONS) : null,
+    bestEfforts: times.length > 1 && cd.length > 1 ? bestEfforts(cum, tr.t, EFFORT_DISTANCES) : null,
+    decoupling: outStream && hr1 ? decoupling(outStream, hr1) : null,
     startMs,
     elapsedS,
     movingS,

@@ -30,6 +30,17 @@ export interface Activity {
   series: { speed: number[] | null; hr: number[] | null; power: number[] | null } | null;
   /** Cumulative moving seconds at each full kilometre, plus the end point (metres, seconds). Used for splits. */
   splits: { cum: number[]; endM: number; endS: number } | null;
+  /** Normalized power (30 s rolling average, 4th-power mean) in watts. null = no power stream. */
+  np: number | null;
+  /** Best average power for standard durations, as [seconds, watts] pairs (mean-maximal power). null = no power stream. */
+  powerCurve: [number, number][] | null;
+  /** Fastest elapsed time over standard distances, as [metres, seconds] pairs. null = no distance/time stream. */
+  bestEfforts: [number, number][] | null;
+  /**
+   * Aerobic decoupling in %: how much output (power, else speed) per heartbeat dropped from the first half
+   * of the moving time to the second. Under ~5 % means good endurance. null = no HR or shorter than 20 min.
+   */
+  decoupling: number | null;
   /** Source file inside the export, if one was read. */
   file?: string;
 }

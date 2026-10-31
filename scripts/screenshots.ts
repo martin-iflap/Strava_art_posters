@@ -148,17 +148,17 @@ async function main(): Promise<void> {
           await page.waitForSelector('#activity-title');
           await shoot(page, 'activity-desktop-light');
           const tiles = await page.locator('.detail .stat').count();
-          const charts = await page.locator('.detail .chart').count();
+          const charts = await page.locator('.detail .charts .chart').count();
           const svgs = await page.locator('.detail .routesvg').count();
           console.log('activity view:', { tiles, charts, route: svgs, title: await page.textContent('#activity-title') });
           if (tiles < 5 || charts < 2 || svgs !== 1) problems.push('activity detail looks empty');
           // Hover: one chart shows its value, every chart and the map show the same point.
-          await page.locator('.detail .chart').first().scrollIntoViewIfNeeded();
-          const box = (await page.locator('.detail .chart').first().boundingBox())!;
+          await page.locator('.detail .charts .chart').first().scrollIntoViewIfNeeded();
+          const box = (await page.locator('.detail .charts .chart').first().boundingBox())!;
           await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
           const hover = await page.evaluate(() => ({
-            charts: Array.from(document.querySelectorAll('.detail .chart .hover')).filter((g) => g.getAttribute('visibility') === 'visible').length,
-            bubble: document.querySelector('.detail .chart .bubble-text')?.textContent ?? '',
+            charts: Array.from(document.querySelectorAll('.detail .charts .chart .hover')).filter((g) => g.getAttribute('visibility') === 'visible').length,
+            bubble: document.querySelector('.detail .charts .chart .bubble-text')?.textContent ?? '',
             map: document.querySelector('.detail .map-cursor')?.closest('[display="none"]') ? 'hidden' : 'visible',
             mapText: document.querySelector('.detail .map-bubble-text')?.textContent ?? '',
           }));
@@ -172,9 +172,9 @@ async function main(): Promise<void> {
             .filter((el) => !el.closest('[display="none"]') && getComputedStyle(el).visibility !== 'hidden').length);
           if (leftOver) problems.push(`map hover marker still shown after the pointer left (${leftOver} parts)`);
           // Keyboard: focus a chart and step with the arrow keys.
-          await page.locator('.detail .chart').first().focus();
+          await page.locator('.detail .charts .chart').first().focus();
           await page.keyboard.press('End');
-          if (!(await page.textContent('.detail .chart .bubble-text'))?.startsWith((await page.locator('.detail .chart .tick').last().textContent())!.split(' ')[0]!)) problems.push('chart End key did not jump to the end');
+          if (!(await page.textContent('.detail .charts .chart .bubble-text'))?.startsWith((await page.locator('.detail .charts .chart .tick').last().textContent())!.split(' ')[0]!)) problems.push('chart End key did not jump to the end');
           // Map background: OpenStreetMap by default (tiles answered locally), movable and zoomable.
           await page.waitForSelector('.detail .map.has-tiles .tiles img');
           await page.waitForTimeout(300);
@@ -186,6 +186,7 @@ async function main(): Promise<void> {
             tiles: Array.from(document.querySelectorAll('.detail .tiles img')).map((i) => (i as HTMLImageElement).src.split('/').slice(-3).join('/')).sort().join(' '),
           }));
           const m0 = await mapState();
+          await page.locator('.detail .map').scrollIntoViewIfNeeded();
           const mb = (await page.locator('.detail .map').boundingBox())!;
           await page.mouse.move(mb.x + mb.width * 0.3, mb.y + mb.height * 0.6);
           await page.mouse.down();
@@ -225,7 +226,7 @@ async function main(): Promise<void> {
           await page.goBack();
           await page.waitForSelector('#overview');
           if (await page.locator('#activity-title').count()) problems.push('browser back did not leave the activity view');
-          await page.locator('.link').first().click();
+          await page.locator('table .link').first().click();
           await page.waitForSelector('#activity-title');
           await page.getByRole('button', { name: /Older activity/ }).click();
           await page.click('#back'); // must skip over the stacked activity entries
