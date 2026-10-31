@@ -44,6 +44,12 @@ export interface LineChartOptions {
   zoom?: Zoom;
 }
 
+/**
+ * Phones: charts scale to the screen width, so a 640–900-unit drawing would shrink its 11 px labels to 4–6 px.
+ * Below 600 px the drawings are narrower, which keeps the labels readable.
+ */
+const narrow = () => typeof innerWidth === 'number' && innerWidth < 600;
+
 /** Rendered width of an SVG text in its own units (estimated per character when it is not laid out yet). */
 export function textWidth(t: SVGTextElement | SVGElement, perChar: number): number {
   try { const w = (t as SVGTextElement).getComputedTextLength(); if (w > 0) return w; } catch { /* not rendered */ }
@@ -90,7 +96,7 @@ function dragZoom(el: SVGElement, W: number, top: number, bottom: number, left: 
 
 /** Responsive line/area chart of one activity stream, sharing hover and zoom with the others. */
 export function lineChart(o: LineChartOptions): SVGElement {
-  const W = 900, H = 190, L = 52, R = 14, T = 12, B = 26;
+  const W = narrow() ? 400 : 900, H = narrow() ? 170 : 190, L = 52, R = 14, T = 12, B = 26;
   const vs = o.values;
   const cursor = o.cursor ?? new Cursor();
   const zoom = o.zoom ?? new Zoom();
@@ -119,7 +125,7 @@ export function lineChart(o: LineChartOptions): SVGElement {
       els.push(svg('line', { class: 'gridline', x1: L, x2: W - R, y1: f1(Y(v)), y2: f1(Y(v)) }));
       els.push(Object.assign(svg('text', { class: 'tick', x: L - 6, y: f1(Y(v) + 4), 'text-anchor': 'end' }), { textContent: o.fmtY(v) }));
     }
-    const xt = niceTicks(a0 * o.xMax, a1 * o.xMax, 6).filter((x) => x >= a0 * o.xMax - 1e-9 && x <= a1 * o.xMax + 1e-9);
+    const xt = niceTicks(a0 * o.xMax, a1 * o.xMax, W < 600 ? 3 : 6).filter((x) => x >= a0 * o.xMax - 1e-9 && x <= a1 * o.xMax + 1e-9);
     xt.forEach((x, i) => els.push(Object.assign(svg('text', { class: 'tick', x: f1(X(x / o.xMax)), y: H - 6, 'text-anchor': X(x / o.xMax) < L + 14 ? 'start' : X(x / o.xMax) > W - R - 30 ? 'end' : 'middle' }), { textContent: `${f1(x)}${i === xt.length - 1 ? ' ' + o.xUnit : ''}` })));
     const pts: string[] = [];
     for (let i = i0; i <= i1; i++) pts.push(`${f1(X(i / (n - 1)))},${f1(Y(vs[i]!))}`);
@@ -156,7 +162,8 @@ export function lineChart(o: LineChartOptions): SVGElement {
     return a0 + ((vx - L) / (W - L - R)) * (a1 - a0);
   };
   el.addEventListener('pointermove', (e) => cursor.set(fromEvent(e)));
-  el.addEventListener('pointerleave', () => cursor.set(null));
+  // A lifted finger 'leaves' too: keep a tapped readout until the next tap or until focus moves.
+  el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') cursor.set(null); });
   el.addEventListener('blur', () => cursor.set(null));
   el.addEventListener('keydown', (e) => {
     const step = ((e.shiftKey ? 0.1 : 0.01) * (a1 - a0));
@@ -247,7 +254,7 @@ export interface XYChartOptions {
 
 /** Line chart over a numeric (optionally logarithmic) x axis, with one shared y axis, a hover readout and drag-to-zoom. */
 export function xyChart(o: XYChartOptions): SVGElement {
-  const W = 640, H = o.height ?? 220, L = 48, R = o.series.some((s) => s.endLabel) ? 44 : 12, T = 12, B = 26;
+  const W = narrow() ? 420 : 640, H = o.height ?? 220, L = 48, R = o.series.some((s) => s.endLabel) ? 44 : 12, T = 12, B = 26;
   const tx = (x: number) => (o.log ? Math.log(Math.max(x, 1e-9)) : x);
   const ux = (t: number) => (o.log ? Math.exp(t) : t);
   const allX = o.series.flatMap((s) => s.points.map((p) => p[0]));
@@ -342,7 +349,7 @@ export function xyChart(o: XYChartOptions): SVGElement {
   if (band) el.append(band);
   el.append(hover, tip.g);
   el.addEventListener('pointermove', (e) => show(fromEvent(e)));
-  el.addEventListener('pointerleave', () => show(null));
+  el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') show(null); });
   el.addEventListener('blur', () => show(null));
   el.addEventListener('keydown', (e) => {
     const k = refPts.indexOf(cur ?? -1);
@@ -420,7 +427,7 @@ export interface Bar { label: string; value: number; tip: string[]; onClick?: ()
 
 /** Vertical bar chart (one series) with a hover readout per bar. Bars with onClick are clickable. */
 export function barChart(o: { bars: Bar[]; label: string; fmtY: (v: number) => string; height?: number; cls?: string; labelEvery?: number }): SVGElement {
-  const W = 640, H = o.height ?? 180, L = 48, R = 8, T = 12, B = 24;
+  const W = narrow() ? 420 : 640, H = o.height ?? 180, L = 48, R = 8, T = 12, B = 24;
   const n = o.bars.length;
   const hi0 = Math.max(0, ...o.bars.map((b) => b.value));
   const ticks = niceTicks(0, hi0 > 0 ? hi0 : 1);
@@ -476,7 +483,7 @@ export function barChart(o: { bars: Bar[]; label: string; fmtY: (v: number) => s
     return i >= 0 && i < n ? i : null;
   };
   el.addEventListener('pointermove', (e) => show(fromEvent(e)));
-  el.addEventListener('pointerleave', () => show(null));
+  el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') show(null); });
   el.addEventListener('blur', () => show(null));
   if (o.bars.some((b) => b.onClick)) {
     el.classList.add('pickable');

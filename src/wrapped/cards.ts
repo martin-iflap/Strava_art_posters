@@ -27,6 +27,8 @@ const clock = (hr: number) => `${String(Math.floor(hr)).padStart(2, '0')}:${Stri
 /** Parse a chart string into an element (all text in it was escaped by the chart code). */
 function chart(s: string): Element {
   const doc = new DOMParser().parseFromString(s, 'image/svg+xml');
+  // A chart that is not well-formed XML parses to an error page: show nothing rather than the error text.
+  if (doc.getElementsByTagName('parsererror').length) return document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   return document.importNode(doc.documentElement, true);
 }
 

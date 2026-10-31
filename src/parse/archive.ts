@@ -137,7 +137,7 @@ export async function expandInputs(inputs: RawInput[]): Promise<VFile[]> {
     }
     for (const e of entries) {
       const name = normPath(e.name);
-      if (name.endsWith('/') || e.size > MAX_ENTRY_BYTES) continue;
+      if (name.endsWith('/') || e.size > MAX_ENTRY_BYTES || e.compSize > MAX_ENTRY_BYTES) continue;
       if (isWanted(name)) out.push({ path: prefix + name, read: () => readEntry(read, e) });
       else if (depth === 0 && isActivityZip(name) && nested + e.size <= MAX_NESTED_BYTES) {
         nested += e.size;

@@ -320,3 +320,9 @@ describe('art posters', () => {
     expect(polar.set - polar.rise).toBeGreaterThan(86_000_000);
   });
 });
+
+describe('esc', () => {
+  it('drops characters that would make the SVG invalid XML', () => {
+    expect(esc('a\u0001b\u001fc<&"\ud800 é 😀')).toBe('abc&lt;&amp;&quot; é 😀');
+  });
+});

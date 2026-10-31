@@ -102,7 +102,8 @@ export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> 
   landSelect: 'recent', landCount: 50, landHeight: 'relative', spaceMetric: 'climb', spaceYear: 'all', bloomYear: 'all', bloomSymmetry: 1, workYear: 'all', clockYear: 'all',
 };
 
-export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** Escape text for SVG; characters XML 1.0 forbids (control codes, lone surrogates) are dropped, or the SVG would not render. */
+export const esc = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 export const n1 = (v: number) => (Math.round(v * 10) / 10).toString();
 export const int = (v: number) => Math.round(v).toLocaleString('en-US');
 /** A multiple ("×") for headlines: whole numbers from 100, one decimal from 10, two below. */

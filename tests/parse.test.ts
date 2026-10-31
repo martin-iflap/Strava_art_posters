@@ -213,3 +213,11 @@ describe('unpacking limits', () => {
     expect(() => maybeGunzip(big)).toThrow(/limit/);
   });
 });
+
+describe('hostile character references', () => {
+  it('never throws and keeps valid ones', async () => {
+    const { decodeEntities } = await import('../src/parse/xml');
+    expect(decodeEntities('a&#99999999;b&#1;c&#xD800;d')).toBe('a\ufffdb\ufffdc\ufffdd');
+    expect(decodeEntities('&#x41;&#66;&amp;lt;')).toBe('AB&lt;');
+  });
+});
