@@ -30,8 +30,49 @@ export interface Activity {
   series: { speed: number[] | null; hr: number[] | null; power: number[] | null } | null;
   /** Cumulative moving seconds at each full kilometre, plus the end point (metres, seconds). Used for splits. */
   splits: { cum: number[]; endM: number; endS: number } | null;
+  /** Normalized power (30 s rolling average, 4th-power mean) in watts. null = no power stream. */
+  np: number | null;
+  /** Best average power for standard durations, as [seconds, watts] pairs (mean-maximal power). null = no power stream. */
+  powerCurve: [number, number][] | null;
+  /** Highest average heart rate held for each duration, as [seconds, bpm] pairs. null = no heart-rate stream. */
+  hrCurve: [number, number][] | null;
+  /** Highest average speed held for each duration (the best-pace curve), as [seconds, m/s] pairs. null = no distance stream. */
+  paceCurve: [number, number][] | null;
+  /** Normalized graded pace as a speed (m/s): grade-adjusted (Minetti), then 30 s rolling 4th-power mean. For rTSS. */
+  ngp: number | null;
+  /** Seconds at each speed, as [speed × 10 (0.1 m/s bins), seconds] pairs. For pace zones. null = no speed. */
+  speedHist: [number, number][] | null;
+  /** Fastest elapsed time over standard distances, as [metres, seconds] pairs. null = no distance/time stream. */
+  bestEfforts: [number, number][] | null;
+  /**
+   * Aerobic decoupling in %: how much output (power, else speed) per heartbeat dropped from the first half
+   * of the moving time to the second. Under ~5 % means good endurance. null = no HR or shorter than 20 min.
+   */
+  decoupling: number | null;
+  /** Laps recorded by the device (FIT and TCX files), when there are at least two. null = none in the file. */
+  laps?: Lap[] | null;
   /** Source file inside the export, if one was read. */
   file?: string;
+}
+
+/** One lap from the device's lap button or auto-lap, measured from the activity's own streams. */
+export interface Lap {
+  /** Start, seconds after the activity started (elapsed time). */
+  startS: number;
+  /** Start, metres into the activity (the x axis of the activity charts). */
+  startM: number;
+  /** Timer time of the lap (elapsed time without pauses when the file says so). */
+  timeS: number;
+  movingS: number;
+  distanceM: number;
+  elevGainM: number;
+  avgHr: number | null;
+  maxHr: number | null;
+  avgPower: number | null;
+  np: number | null;
+  avgCadence: number | null;
+  /** What ended the lap: manual, distance, time, position... (FIT lap_trigger), when known. */
+  trigger?: string;
 }
 
 export interface Issue {
@@ -50,8 +91,8 @@ export interface ImportResult {
 }
 
 export const ROUTE_POINTS = 256;
-export const PROFILE_POINTS = 100;
-export const SERIES_POINTS = 100;
+export const PROFILE_POINTS = 300;
+export const SERIES_POINTS = 300;
 
 export type Tz = 'UTC' | 'local';
 export type Units = 'metric' | 'imperial';

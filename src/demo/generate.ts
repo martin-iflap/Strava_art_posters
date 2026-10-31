@@ -58,8 +58,9 @@ interface Path { pts: XY[]; closed: boolean; cum: number[]; len: number; eleA: n
 function mkPath(pts: XY[], closed: boolean, r: Rng): Path {
   const cum = [0];
   for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1]! + Math.hypot(pts[i]![0] - pts[i - 1]![0], pts[i]![1] - pts[i - 1]![1]));
-  const amp = range(r, 20, 140);
-  return { pts, closed, cum, len: cum[cum.length - 1]!, eleA: [amp, amp * 0.4], eleP: [range(r, 6000, 15000), range(r, 800, 2500)], eleF: [r() * 6, r() * 6] };
+  // rolling hills: grades up to about 7 %, with small bumps on top
+  const amp = range(r, 15, 90);
+  return { pts, closed, cum, len: cum[cum.length - 1]!, eleA: [amp, amp * 0.15], eleP: [range(r, 8000, 20000), range(r, 1500, 4000)], eleF: [r() * 6, r() * 6] };
 }
 
 function makeLoop(r: Rng, radius: number, cx: number, cy: number): Path {
@@ -109,9 +110,9 @@ function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number,
   const base = kind === 'ride' ? range(r, 6.5, 9) : kind === 'run' ? range(r, 2.7, 3.5) : range(r, 1.2, 1.5);
   const total = path.closed ? path.len : path.len;
   const out: Sample[] = [];
-  let s = 0, t = startMs, dist = 0, hr = 95, prevEle = eleAt(path, offset);
+  let s = 0, t = startMs, dist = 0, hr = 95, prevEle = eleAt(path, offset), pw = 120;
   let stopLeft = 0;
-  const hrMax = range(r, 0.62, 0.82);
+  const hrMax = range(r, 0.42, 0.7);
   while (s < total && out.length < 20000) {
     const pos = at(path, offset + dir * s);
     const ele = eleAt(path, offset + dir * s) + gauss(r) * 0.4;
@@ -120,11 +121,15 @@ function simulate(r: Rng, path: Path, kind: Kind, startMs: number, step: number,
     let v = stopLeft > 0 ? 0 : Math.max(0.5, base * (1 - grade * 4) * (1 + gauss(r) * 0.06));
     if (stopLeft > 0) stopLeft--;
     else if (r() < 0.004) stopLeft = Math.floor(range(r, 6, 24) / step) + 1;
-    const lat = origin[0] + (pos[1] + lateral[1] + gauss(r) * 1.5) / M_LAT;
-    const lon = origin[1] + (pos[0] + lateral[0] + gauss(r) * 1.5) / (M_LAT * Math.cos((origin[0] * Math.PI) / 180));
+    const lat = origin[0] + (pos[1] + lateral[1] + gauss(r) * 0.5) / M_LAT;
+    const lon = origin[1] + (pos[0] + lateral[0] + gauss(r) * 0.5) / (M_LAT * Math.cos((origin[0] * Math.PI) / 180));
     const target = 95 + (188 - 95) * Math.min(1, hrMax + grade * 2.5) * (v === 0 ? 0.7 : 1);
     hr += (target - hr) * 0.08 + gauss(r) * 1.2;
-    const power = v === 0 ? 0 : Math.max(0, Math.min(900, 110 + 22 * v + 2500 * grade * (v / 8) + gauss(r) * 25));
+    // Road-bike physics (80 kg, Crr 0.005, CdA 0.32) with smoothed rider noise: coasts downhill, works uphill.
+    const pTarget = v === 0 ? 0 : Math.max(0, (80 * 9.81 * v * (grade + 0.005) + 0.5 * 1.2 * 0.32 * v ** 3) / 0.97);
+    pw += (pTarget - pw) * (1 - Math.exp(-step / 6)) + gauss(r) * 12;
+    if (r() < 0.01 * step) pw += range(r, 80, 300); // a short surge
+    const power = v === 0 ? 0 : Math.max(0, Math.min(1200, pw));
     out.push({
       t, lat, lon, ele, dist,
       hr: withHr ? Math.round(hr) : NaN,
@@ -155,10 +160,25 @@ function toGpx(name: string, type: string, sm: Sample[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx creator="Fake" version="1.1" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">\n<metadata><time>${new Date(sm[0]!.t).toISOString()}</time></metadata>\n<trk><name>${esc(name)}</name><type>${type}</type><trkseg>\n${pts.join('\n')}\n</trkseg></trk></gpx>\n`;
 }
 
+/** Auto-lap boundaries (sample indexes where a lap starts), every `every` metres like a device's auto-lap. */
+function lapStarts(sm: Sample[], every: number): number[] {
+  const out = [0];
+  for (let i = 1; i < sm.length; i++) if (Math.floor(sm[i]!.dist / every) > Math.floor(sm[i - 1]!.dist / every) && sm.length - i > 3) out.push(i);
+  return out;
+}
+const LAP_EVERY: Record<string, number> = { Biking: 10_000, Running: 1000, Other: 1e12 };
+const FIT_LAP_EVERY: Record<number, number> = { 2: 10_000, 1: 1000 };
+
 function toTcx(sport: string, sm: Sample[]): string {
   const pts = sm.map((p) =>
     `<Trackpoint><Time>${new Date(p.t).toISOString()}</Time><Position><LatitudeDegrees>${p.lat.toFixed(6)}</LatitudeDegrees><LongitudeDegrees>${p.lon.toFixed(6)}</LongitudeDegrees></Position><AltitudeMeters>${p.ele.toFixed(1)}</AltitudeMeters><DistanceMeters>${p.dist.toFixed(1)}</DistanceMeters>${num(p.hr) ? `<HeartRateBpm><Value>${p.hr}</Value></HeartRateBpm>` : ''}${num(p.cad) ? `<Cadence>${p.cad}</Cadence>` : ''}${num(p.power) ? `<Extensions><TPX xmlns="http://www.garmin.com/xmlschemas/ActivityExtension/v2"><Watts>${p.power}</Watts></TPX></Extensions>` : ''}</Trackpoint>`);
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"><Activities><Activity Sport="${sport}"><Id>${new Date(sm[0]!.t).toISOString()}</Id><Lap StartTime="${new Date(sm[0]!.t).toISOString()}"><Track>\n${pts.join('\n')}\n</Track></Lap></Activity></Activities></TrainingCenterDatabase>\n`;
+  const starts = lapStarts(sm, LAP_EVERY[sport] ?? 1e12);
+  const laps = starts.map((i0, k) => {
+    const i1 = (starts[k + 1] ?? sm.length) - 1;
+    const end = sm[Math.min(sm.length - 1, i1 + 1)]!;
+    return `<Lap StartTime="${new Date(sm[i0]!.t).toISOString()}"><TotalTimeSeconds>${((end.t - sm[i0]!.t) / 1000).toFixed(0)}</TotalTimeSeconds><DistanceMeters>${(end.dist - sm[i0]!.dist).toFixed(1)}</DistanceMeters><TriggerMethod>${k + 1 < starts.length ? 'Distance' : 'Manual'}</TriggerMethod><Track>\n${pts.slice(i0, i1 + 1).join('\n')}\n</Track></Lap>`;
+  }).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"><Activities><Activity Sport="${sport}"><Id>${new Date(sm[0]!.t).toISOString()}</Id>${laps}</Activity></Activities></TrainingCenterDatabase>\n`;
 }
 
 const SEMI = 2 ** 31 / 180;
@@ -183,6 +203,19 @@ function toFit(sport: number, sm: Sample[]): Uint8Array {
     ], 1);
   }
   const last = sm[sm.length - 1]!;
+  const starts = lapStarts(sm, FIT_LAP_EVERY[sport] ?? 1e12);
+  starts.forEach((i0, k) => {
+    const end = sm[Math.min(sm.length - 1, starts[k + 1] ?? sm.length - 1)]!;
+    const secs = (end.t - sm[i0]!.t) / 1000;
+    e.writeMessage(19, [
+      { number: 253, size: 4, baseType: FitBaseType.Uint32, value: ts(end.t) },
+      { number: 2, size: 4, baseType: FitBaseType.Uint32, value: ts(sm[i0]!.t) },
+      { number: 7, size: 4, baseType: FitBaseType.Uint32, value: Math.round(secs * 1000) },
+      { number: 8, size: 4, baseType: FitBaseType.Uint32, value: Math.round(secs * 1000) },
+      { number: 9, size: 4, baseType: FitBaseType.Uint32, value: Math.round((end.dist - sm[i0]!.dist) * 100) },
+      { number: 24, size: 1, baseType: FitBaseType.Enum, value: k + 1 < starts.length ? 2 : 7 },
+    ], 3);
+  });
   e.writeMessage(18, [
     { number: 253, size: 4, baseType: FitBaseType.Uint32, value: ts(last.t) },
     { number: 2, size: 4, baseType: FitBaseType.Uint32, value: ts(sm[0]!.t) },
@@ -241,7 +274,7 @@ const CSV_TYPE: Record<Kind, string> = { ride: 'Ride', run: 'Run', walk: 'Walk' 
 export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: Truth } {
   const r = rng32(opts.seed ?? 1234);
   const density = opts.density ?? 1;
-  const step = opts.stepS ?? 15;
+  const step = opts.stepS ?? 5;
   const corrupt = opts.corrupt ?? true;
 
   const rideLoops = [makeLoop(r, 5200, 0, 0), makeLoop(r, 8500, 800, -600), makeLoop(r, 3800, -1200, 900), makeLoop(r, 11000, 0, 400)];
@@ -275,7 +308,7 @@ export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: T
       const path = oneOff ? makeWander(r, kind === 'ride' ? range(r, 20_000, 90_000) : range(r, 3000, 12_000)) : pick(r, loops);
       const hasPower = kind === 'ride' && d.getUTCFullYear() >= 2022 && r() < 0.7;
       const hasHr = r() < 0.85;
-      const sm = simulate(r, path, kind, startMs, kind === 'ride' ? step : Math.max(2, step / 2), hasHr, hasPower);
+      const sm = simulate(r, path, kind, startMs, step, hasHr, hasPower);
       const dist = sm[sm.length - 1]!.dist;
       const elapsed = (sm[sm.length - 1]!.t - sm[0]!.t) / 1000;
       let moving = 0;
@@ -299,7 +332,7 @@ export function generate(opts: GenOptions = {}): { files: ExportFile[]; truth: T
       let warn = false;
       let dropFile = false;
       if (corrupt) {
-        if (n === 20) { payload = payload.subarray(0, Math.floor(payload.length / 2)); warn = true; } // truncated
+        if (n === 20) { const z = gzipSync(payload); payload = z.subarray(0, Math.floor(z.length / 2)); warn = true; } // truncated (unreadable whatever the format)
         else if (n === 41) { payload = enc('this is not a track file'); file = `${base}.gpx`; warn = true; }
         else if (n === 62) { dropFile = true; warn = true; } // row points at a file that is not in the export
         else if (n === 83) { rowName = '=HYPERLINK("http://example.invalid","click")'; }

@@ -19,6 +19,25 @@ beforeAll(async () => {
   result = await importExport(await expandInputs(files.map((f) => ({ path: f.path, data: f.data }))));
 }, 60_000);
 
+describe('laps', () => {
+  it('reads auto-laps from FIT and TCX files and measures each lap from the streams', () => {
+    const withLaps = result.activities.filter((a) => a.laps);
+    expect(withLaps.length).toBeGreaterThan(5);
+    for (const a of withLaps.slice(0, 20)) {
+      const laps = a.laps!;
+      const total = laps.reduce((s, l) => s + l.distanceM, 0);
+      expect(Math.abs(total - a.distanceM) / a.distanceM).toBeLessThan(0.03);
+      for (let i = 1; i < laps.length; i++) expect(laps[i]!.startS).toBeGreaterThan(laps[i - 1]!.startS);
+      const every = a.sport === 'Ride' ? 10_000 : 1000;
+      for (const l of laps.slice(0, -1)) expect(Math.abs(l.distanceM - every)).toBeLessThan(every * 0.05);
+      if (a.avgHr) expect(laps.some((l) => l.avgHr)).toBe(true);
+      if (a.np) expect(laps.find((l) => l.distanceM >= every * 0.9)!.np).toBeGreaterThan(0);
+    }
+    // GPX has no laps
+    expect(result.activities.filter((a) => a.file?.includes('.gpx')).every((a) => !a.laps)).toBe(true);
+  });
+});
+
 describe('import pipeline (folder form)', () => {
   it('imports every valid row, skips and warns on the deliberately broken ones', () => {
     expect(result.activities).toHaveLength(truth.importable);
@@ -216,5 +235,30 @@ describe('export', () => {
     expect(exportFilename(a, 'Ride', 'monthly', 'csv', 'UTC')).toBe('ride-atlas_Ride_2022-03-04_2023-11-30_monthly.csv');
     expect(exportFilename(a, 'all', 'stats', 'json', 'UTC')).toBe('ride-atlas_all_2022-03-04_2023-11-30_stats.json');
     expect(exportFilename([], 'Virtual Ride', 'x', 'csv', 'UTC')).toBe('ride-atlas_Virtual-Ride_x.csv');
+  });
+});
+
+describe('Garmin export', () => {
+  it('opens the FIT files inside the nested UploadedFiles ZIP and names them by time of day', async () => {
+    const fits = files.filter((f) => /\.fit\.gz$/.test(f.path)).slice(0, 4);
+    const { gunzipSync } = await import('fflate');
+    const inner = zipSync(Object.fromEntries(fits.map((f, i) => [`someone@example.com_${1000 + i}.fit`, gunzipSync(f.data)])));
+    const outer = zipSync({
+      'DI_CONNECT/DI-Connect-Uploaded-Files/UploadedFiles_0-_Part1.zip': [inner, { level: 0 }],
+      'DI_CONNECT/DI-Connect-Fitness/someone_0_summarizedActivities.json': new TextEncoder().encode('[]'),
+      'DI_CONNECT/DI-Connect-User/photos.zip': zipSync({ 'a.jpg': new Uint8Array(10) }),
+    });
+    const vf = await expandInputs([{ path: 'garmin.zip', data: new Blob([outer]) }]);
+    expect(vf.map((f) => f.path.split('/').pop())).toEqual(fits.map((_, i) => `someone@example.com_${1000 + i}.fit`));
+    const r = await importExport(vf);
+    expect(r.activities).toHaveLength(4);
+    for (const a of r.activities) {
+      expect(a.name).toMatch(/^(Morning|Lunch|Afternoon|Evening|Night) (Ride|Run|Walk)$/);
+      expect(a.id).not.toMatch(/@/);
+      expect(a.route).not.toBeNull();
+    }
+    // compressed inner ZIP works too
+    const outer2 = zipSync({ 'DI_CONNECT/DI-Connect-Uploaded-Files/UploadedFiles_0-_Part1.zip': inner });
+    expect(await expandInputs([{ path: 'garmin.zip', data: outer2 }])).toHaveLength(4);
   });
 });

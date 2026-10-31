@@ -72,5 +72,5 @@ export function download(filename: string, data: string | Blob, mime: string): v
   document.body.append(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000); // Safari on iOS reads the blob after a delay
 }

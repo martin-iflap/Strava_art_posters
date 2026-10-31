@@ -4,7 +4,7 @@ import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
 
-export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space';
+export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space' | 'bloom' | 'stream' | 'spiral' | 'strata' | 'work' | 'fingerprint' | 'sunrise';
 export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'facets', name: 'Route facets' },
   { id: 'overlay', name: 'All routes' },
@@ -21,6 +21,13 @@ export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'todweek', name: 'Time of day by weekday' },
   { id: 'landscape', name: 'Landscape' },
   { id: 'space', name: 'To space' },
+  { id: 'bloom', name: 'Route bloom' },
+  { id: 'stream', name: 'Stream of seasons' },
+  { id: 'spiral', name: 'Year spiral' },
+  { id: 'strata', name: 'Heart-rate strata' },
+  { id: 'work', name: 'Work done' },
+  { id: 'fingerprint', name: 'Power fingerprint' },
+  { id: 'sunrise', name: 'Sunrise clock' },
 ];
 
 export interface Theme { id: string; name: string; bg: string; fg: string; muted: string; accent: string }
@@ -81,15 +88,22 @@ export interface PosterOptions {
   /** what goes straight up: metres climbed or distance */
   spaceMetric: 'climb' | 'distance';
   spaceYear: number | 'all';
+  /** period of the route bloom, and how many times each petal repeats around the centre */
+  bloomYear: number | 'all';
+  bloomSymmetry: number;
+  /** period of the work-done poster and of the sunrise clock */
+  workYear: number | 'all';
+  clockYear: number | 'all';
 }
 
 export const DEFAULT_POSTER: Omit<PosterOptions, 'units' | 'tz' | 'sportLabel'> = {
   theme: 'dark', size: 'a3', strip: true, hideEnds: 200, facetSort: 'date', facetYear: 'all', facetRegions: 'all', overlayYear: 'all', overlayRegions: 'auto', calendarMetric: 'distance', ridgeSelect: 'recent', ridgeCount: 30, seasonYear: null,
   circleColor: 'year', circleYear: 'all', circleGroup: 'none', todRows: 'year', punchMetric: 'count', climbYear: null, worldYear: 'all', todYear: null,
-  landSelect: 'recent', landCount: 50, landHeight: 'relative', spaceMetric: 'climb', spaceYear: 'all',
+  landSelect: 'recent', landCount: 50, landHeight: 'relative', spaceMetric: 'climb', spaceYear: 'all', bloomYear: 'all', bloomSymmetry: 1, workYear: 'all', clockYear: 'all',
 };
 
-export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** Escape text for SVG; characters XML 1.0 forbids (control codes, lone surrogates) are dropped, or the SVG would not render. */
+export const esc = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 export const n1 = (v: number) => (Math.round(v * 10) / 10).toString();
 export const int = (v: number) => Math.round(v).toLocaleString('en-US');
 /** A multiple ("×") for headlines: whole numbers from 100, one decimal from 10, two below. */

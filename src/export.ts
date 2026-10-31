@@ -3,6 +3,7 @@ import { bySport, byPeriod, records, summarize, type Summary } from './stats/sum
 import { activityZones, zonesBy, zoneTotals, type Zone } from './stats/zones';
 import { distance, distanceUnit, elevation, elevationUnit, speed, speedUnit } from './util/units';
 import { parts, ymd } from './util/time';
+import { activityLoad, type Thresholds } from './stats/training';
 
 /** RFC-4180 field. Text starting with = + - @ gets a leading apostrophe so spreadsheets never run it as a formula. */
 export function csvField(v: string | number | boolean | null | undefined, text = false): string {
@@ -26,6 +27,8 @@ export interface ExportOptions {
   tz: Tz;
   hrZones: Zone[] | null;
   powerZones: Zone[] | null;
+  /** FTP and threshold HR for the training-stress columns */
+  thresholds?: Thresholds;
 }
 
 const summaryHeader = (u: Units) => [
@@ -43,15 +46,18 @@ export function activitiesCsv(acts: Activity[], o: ExportOptions): string {
   const zp = (o.powerZones ?? []).map((z) => `power_${z.name.split(' ')[0]!.toLowerCase()}_s`);
   const header = [
     'id', 'date', 'start_time_utc', 'name', 'sport', `distance_${distanceUnit(u)}`, 'moving_time_s', 'elapsed_time_s',
-    `elevation_gain_${elevationUnit(u)}`, `avg_speed_${speedUnit(u).replace('/', '')}`, 'avg_hr', 'max_hr', 'avg_power', 'max_power', ...zh, ...zp,
+    `elevation_gain_${elevationUnit(u)}`, `avg_speed_${speedUnit(u).replace('/', '')}`, 'avg_hr', 'max_hr', 'avg_power', 'max_power',
+    'normalized_power', 'normalized_graded_pace_s_per_km', 'intensity_factor', 'tss', 'tss_source', 'aerobic_decoupling_pct', ...zh, ...zp,
   ];
   const rows = acts.map((a) => {
     const hz = o.hrZones ? activityZones(a, 'hr', o.hrZones) : null;
     const pz = o.powerZones ? activityZones(a, 'power', o.powerZones) : null;
+    const load = o.thresholds ? activityLoad(a, o.thresholds) : null;
     return [
       a.id, ymd(parts(a.startMs, o.tz)), new Date(a.startMs).toISOString(), a.name, a.sport,
       r(distance(a.distanceM, u)), Math.round(a.movingS), Math.round(a.elapsedS), r(elevation(a.elevGainM, u), 1),
       r(speed(a.movingS > 0 ? a.distanceM / a.movingS : 0, u)), r(a.avgHr, 1), a.maxHr, r(a.avgPower, 1), a.maxPower,
+      r(a.np, 1), a.ngp ? r(1000 / a.ngp, 1) : null, load ? r(load.if, 3) : null, load ? r(load.tss, 1) : null, load?.source ?? null, a.decoupling,
       ...(o.hrZones ? o.hrZones.map((_, i) => (hz ? r(hz[i]!, 1) : null)) : []),
       ...(o.powerZones ? o.powerZones.map((_, i) => (pz ? r(pz[i]!, 1) : null)) : []),
     ];

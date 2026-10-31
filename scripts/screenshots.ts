@@ -148,17 +148,17 @@ async function main(): Promise<void> {
           await page.waitForSelector('#activity-title');
           await shoot(page, 'activity-desktop-light');
           const tiles = await page.locator('.detail .stat').count();
-          const charts = await page.locator('.detail .chart').count();
+          const charts = await page.locator('.detail .charts .chart').count();
           const svgs = await page.locator('.detail .routesvg').count();
           console.log('activity view:', { tiles, charts, route: svgs, title: await page.textContent('#activity-title') });
           if (tiles < 5 || charts < 2 || svgs !== 1) problems.push('activity detail looks empty');
           // Hover: one chart shows its value, every chart and the map show the same point.
-          await page.locator('.detail .chart').first().scrollIntoViewIfNeeded();
-          const box = (await page.locator('.detail .chart').first().boundingBox())!;
+          await page.locator('.detail .charts .chart').first().scrollIntoViewIfNeeded();
+          const box = (await page.locator('.detail .charts .chart').first().boundingBox())!;
           await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
           const hover = await page.evaluate(() => ({
-            charts: Array.from(document.querySelectorAll('.detail .chart .hover')).filter((g) => g.getAttribute('visibility') === 'visible').length,
-            bubble: document.querySelector('.detail .chart .bubble-text')?.textContent ?? '',
+            charts: Array.from(document.querySelectorAll('.detail .charts .chart .hover')).filter((g) => g.getAttribute('visibility') === 'visible').length,
+            bubble: document.querySelector('.detail .charts .chart .bubble-text')?.textContent ?? '',
             map: document.querySelector('.detail .map-cursor')?.closest('[display="none"]') ? 'hidden' : 'visible',
             mapText: document.querySelector('.detail .map-bubble-text')?.textContent ?? '',
           }));
@@ -172,9 +172,9 @@ async function main(): Promise<void> {
             .filter((el) => !el.closest('[display="none"]') && getComputedStyle(el).visibility !== 'hidden').length);
           if (leftOver) problems.push(`map hover marker still shown after the pointer left (${leftOver} parts)`);
           // Keyboard: focus a chart and step with the arrow keys.
-          await page.locator('.detail .chart').first().focus();
+          await page.locator('.detail .charts .chart').first().focus();
           await page.keyboard.press('End');
-          if (!(await page.textContent('.detail .chart .bubble-text'))?.startsWith((await page.locator('.detail .chart .tick').last().textContent())!.split(' ')[0]!)) problems.push('chart End key did not jump to the end');
+          if (!(await page.textContent('.detail .charts .chart .bubble-text'))?.startsWith((await page.locator('.detail .charts .chart .tick').last().textContent())!.split(' ')[0]!)) problems.push('chart End key did not jump to the end');
           // Map background: OpenStreetMap by default (tiles answered locally), movable and zoomable.
           await page.waitForSelector('.detail .map.has-tiles .tiles img');
           await page.waitForTimeout(300);
@@ -186,6 +186,7 @@ async function main(): Promise<void> {
             tiles: Array.from(document.querySelectorAll('.detail .tiles img')).map((i) => (i as HTMLImageElement).src.split('/').slice(-3).join('/')).sort().join(' '),
           }));
           const m0 = await mapState();
+          await page.locator('.detail .map').scrollIntoViewIfNeeded();
           const mb = (await page.locator('.detail .map').boundingBox())!;
           await page.mouse.move(mb.x + mb.width * 0.3, mb.y + mb.height * 0.6);
           await page.mouse.down();
@@ -225,7 +226,7 @@ async function main(): Promise<void> {
           await page.goBack();
           await page.waitForSelector('#overview');
           if (await page.locator('#activity-title').count()) problems.push('browser back did not leave the activity view');
-          await page.locator('.link').first().click();
+          await page.locator('table .link').first().click();
           await page.waitForSelector('#activity-title');
           await page.getByRole('button', { name: /Older activity/ }).click();
           await page.click('#back'); // must skip over the stacked activity entries
@@ -299,6 +300,8 @@ async function main(): Promise<void> {
       ['climb', 'dark', 'a3', 'climb'], ['climb', 'light', 'square', 'climb-square'],
       ['world', 'dark', 'a3', 'world'], ['world', 'aurora', 'square', 'world-square'], ['todweek', 'ember', 'a3', 'todweek'],
       ['landscape', 'light', 'a3', 'landscape'], ['space', 'dark', 'a3', 'space'], ['space', 'ember', 'square', 'space-square'],
+      ['bloom', 'dark', 'a3', 'bloom'], ['stream', 'aurora', 'a3', 'stream'], ['spiral', 'light', 'square', 'spiral'], ['strata', 'ember', 'a3', 'strata'],
+      ['work', 'dark', 'a3', 'work'], ['fingerprint', 'ember', 'a3', 'fingerprint'], ['sunrise', 'aurora', 'a3', 'sunrise'], ['sunrise', 'light', 'square', 'sunrise-square'],
     ];
     const pctx = await fakeTiles(await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true }));
     const pp = await pctx.newPage();
@@ -308,6 +311,38 @@ async function main(): Promise<void> {
     await pp.waitForSelector('#export', { timeout: 60_000 });
     await pp.waitForFunction(() => Array.from(document.querySelectorAll('.promo img')).every((i) => (i as HTMLImageElement).src && (i as HTMLImageElement).complete));
     await shoot(pp, 'stats-promo', false);
+    // Sport Wrapped: pick a year, step through every card with the keyboard, save the picture, close.
+    await pp.click('#open-wrapped');
+    await pp.waitForSelector('.w-year');
+    await a11y(pp, 'wrapped-picker');
+    await shoot(pp, 'wrapped-picker', false);
+    await pp.click('.w-year');
+    const wcards = await pp.locator('.w-prog').count();
+    if (wcards < 10) problems.push(`wrapped: only ${wcards} cards on the demo data`);
+    for (let i = 0; i < wcards; i++) {
+      if (!(await pp.textContent('#w-live'))?.startsWith(`Card ${i + 1} of`)) problems.push(`wrapped: card ${i + 1} not announced`);
+      if (i === 2) { await pp.waitForTimeout(1500); await a11y(pp, 'wrapped-card'); } // after the card's fade-in
+      if (i === 0 || i === 5 || i === wcards - 1) await shoot(pp, `wrapped-${i + 1}`, false);
+      await pp.keyboard.press('ArrowRight');
+    }
+    const [wdl] = await Promise.all([pp.waitForEvent('download'), pp.click('#w-save')]);
+    const wpath = await wdl.path();
+    if (!wpath || statSync(wpath).size < 20_000) problems.push('wrapped: saved picture missing or too small');
+    await pp.keyboard.press('ArrowLeft');
+    if (!(await pp.textContent('#w-live'))?.startsWith(`Card ${wcards - 1} of`)) problems.push('wrapped: ArrowLeft did not go back');
+    await pp.keyboard.press('Escape');
+    await pp.waitForTimeout(200);
+    if (await pp.locator('dialog.wrapped').count()) problems.push('wrapped: Escape did not close');
+    if ((await pp.evaluate(() => document.activeElement?.id)) !== 'open-wrapped') problems.push('wrapped: focus not returned');
+    // Auto-advance: the first card moves on by itself after its progress bar fills.
+    await pp.click('#open-wrapped');
+    await pp.click('.w-year');
+    await pp.waitForTimeout(6_600);
+    if (!(await pp.textContent('#w-live'))?.startsWith('Card 2 of')) problems.push('wrapped: did not advance by itself');
+    await pp.goBack(); // Back closes it too
+    await pp.waitForTimeout(200);
+    if (await pp.locator('dialog.wrapped').count()) problems.push('wrapped: Back did not close');
+    if (!(await pp.locator('#export').count())) problems.push('wrapped: Back left the stats page');
     await pp.click('#open-posters'); // the banner on the stats page leads to the gallery
     await pp.waitForSelector('.gallery');
     const cards = await pp.locator('.pcard').count();

@@ -6,6 +6,7 @@ import { expandInputs } from '../src/parse/archive';
 import { importExport } from '../src/parse/pipeline';
 import type { Activity } from '../src/types';
 import { act, utc } from './helpers';
+import { sunTimes, workEquivalents, workKj } from '../src/posters/power';
 
 const opts = (o: Partial<PosterOptions> = {}): PosterOptions => ({ ...DEFAULT_POSTER, units: 'metric', tz: 'UTC', sportLabel: 'All activities', ...o });
 let acts: Activity[];
@@ -30,6 +31,7 @@ describe('posters', () => {
         expect(p.svg.startsWith('<svg ')).toBe(true);
         expect(p.svg.endsWith('</svg>')).toBe(true);
         expect(p.svg).not.toMatch(/NaN|undefined|Infinity/);
+        expect(p.svg).not.toMatch(/<(?![a-zA-Z/!?])|&(?![a-z]+;|#\d+;|#x[\da-f]+;)/i); // text is escaped
         expect(count(p.svg, /<(?!\/)[a-zA-Z]/g)).toBe(count(p.svg, /<\/[a-zA-Z]+>|\/>/g)); // balanced tags
       }
     }
@@ -252,5 +254,75 @@ describe('privacy', () => {
     // the overlay draws every second point: 11 → 6, trimmed 7 → 4
     expect(points(renderPoster('overlay', a, opts({ hideEnds: 0 })).svg)).toBe(6);
     expect(points(renderPoster('overlay', a, opts({ hideEnds: 200 })).svg)).toBe(4);
+  });
+});
+
+describe('art posters', () => {
+  it('bloom draws one petal per route, repeated by the symmetry', async () => {
+    const a = await load();
+    const routes = a.filter((x) => x.route && x.route.length >= 8).length;
+    const one = renderPoster('bloom', a, opts({ strip: false }));
+    expect(count(one.svg, /<path d=/g)).toBeLessThanOrEqual(routes);
+    expect(count(one.svg, /<path d=/g)).toBeGreaterThan(routes * 0.8);
+    const three = renderPoster('bloom', a, opts({ strip: false, bloomSymmetry: 3 }));
+    expect(count(three.svg, /<path d=/g) % 3).toBe(0);
+  });
+  it('spiral draws one stroke per active day; stream one ribbon per sport', async () => {
+    const a = await load();
+    const days = new Set(a.map((x) => Math.floor(x.startMs / 86_400_000))).size;
+    expect(count(renderPoster('spiral', a, opts({ strip: false })).svg, /<line /g)).toBe(days);
+    const sports = new Set(a.map((x) => x.sport)).size;
+    expect(count(renderPoster('stream', a, opts({ strip: false })).svg, /fill-opacity="0.88"/g)).toBe(Math.min(6, sports));
+  });
+  it('strata draws a layer per activity with heart rate, one year label per year', async () => {
+    const a = await load();
+    const withHr = a.filter((x) => x.series?.hr && x.series.hr.length > 2);
+    const svg = renderPoster('strata', a, opts({ strip: false })).svg;
+    const years = new Set(withHr.map((x) => new Date(x.startMs).getUTCFullYear())).size;
+    expect(count(svg, /<line /g)).toBe(years);
+    expect(count(svg, /class="stratum"/g)).toBeGreaterThanOrEqual(3);
+    expect(count(svg, /M[\d.]+ [\d.]+h/g)).toBeGreaterThanOrEqual(Math.min(400, withHr.length));
+    expect(renderPoster('strata', a.map((x) => ({ ...x, series: null })), opts({ strip: false })).svg).toMatch(/No heart-rate data/);
+  });
+  it('work done fills squares for the total energy, and the equivalents are right', async () => {
+    const a = await load();
+    const total = a.reduce((s, x) => s + workKj(x), 0);
+    expect(total).toBeGreaterThan(0);
+    const svg = renderPoster('work', a, opts({ strip: false })).svg;
+    const unit = Number(/each square ([\d,]+) kJ/.exec(svg)![1]!.replace(/,/g, ''));
+    expect(count(svg, /<rect x=/g)).toBeGreaterThanOrEqual(Math.ceil(total / unit));
+    expect(workKj(act({ startMs: 0, powerHist: [[200, 3600]] }))).toBe(720);
+    expect(workKj(act({ startMs: 0, avgPower: 100, movingS: 1000 }))).toBe(100);
+    const eq = workEquivalents(3600);
+    expect(eq[3]!.value).toBeCloseTo(100 / 24, 5); // 1 kWh runs a 10 W bulb for 100 h
+    expect(eq[2]!.value).toBeCloseTo(3600 / 334.88, 3);
+    expect(renderPoster('work', a.map((x) => ({ ...x, powerHist: null, avgPower: null })), opts()).svg).toMatch(/No power data/);
+  });
+  it('power fingerprint draws one bold line per year', async () => {
+    const a = await load();
+    const years = new Set(a.filter((x) => x.powerCurve).map((x) => new Date(x.startMs).getUTCFullYear())).size;
+    const svg = renderPoster('fingerprint', a, opts({ strip: false })).svg;
+    expect(count(svg, /class="year"/g)).toBe(Math.min(8, years));
+    expect(svg).toMatch(/ESTIMATED FTP/);
+  });
+  it('sunrise clock draws an arc per activity, and daylight from the sunrise equation', async () => {
+    const a = await load();
+    const svg = renderPoster('sunrise', a, opts({ strip: false })).svg;
+    expect(count(svg, /A[\d.]+,[\d.]+ 0 [01] 1 /g)).toBe(a.length + 1); // the activities, plus the outer edge of daylight
+    expect(svg).toMatch(/class="daylight"/);
+    // London, 21 June 2024: sunrise 03:43 UTC, sunset 20:21 UTC (to within a few minutes)
+    const d = Math.floor(Date.UTC(2024, 5, 21) / 86_400_000);
+    const s = sunTimes(d, 51.5, -0.13);
+    const hm = (ms: number) => new Date(ms).getUTCHours() * 60 + new Date(ms).getUTCMinutes();
+    expect(Math.abs(hm(s.rise) - (3 * 60 + 43))).toBeLessThan(4);
+    expect(Math.abs(hm(s.set) - (20 * 60 + 21))).toBeLessThan(4);
+    const polar = sunTimes(d, 78, 15);
+    expect(polar.set - polar.rise).toBeGreaterThan(86_000_000);
+  });
+});
+
+describe('esc', () => {
+  it('drops characters that would make the SVG invalid XML', () => {
+    expect(esc('a\u0001b\u001fc<&"\ud800 é 😀')).toBe('abc&lt;&amp;&quot; é 😀');
   });
 });
