@@ -49,8 +49,30 @@ export interface Activity {
    * of the moving time to the second. Under ~5 % means good endurance. null = no HR or shorter than 20 min.
    */
   decoupling: number | null;
+  /** Laps recorded by the device (FIT and TCX files), when there are at least two. null = none in the file. */
+  laps?: Lap[] | null;
   /** Source file inside the export, if one was read. */
   file?: string;
+}
+
+/** One lap from the device's lap button or auto-lap, measured from the activity's own streams. */
+export interface Lap {
+  /** Start, seconds after the activity started (elapsed time). */
+  startS: number;
+  /** Start, metres into the activity (the x axis of the activity charts). */
+  startM: number;
+  /** Timer time of the lap (elapsed time without pauses when the file says so). */
+  timeS: number;
+  movingS: number;
+  distanceM: number;
+  elevGainM: number;
+  avgHr: number | null;
+  maxHr: number | null;
+  avgPower: number | null;
+  np: number | null;
+  avgCadence: number | null;
+  /** What ended the lap: manual, distance, time, position... (FIT lap_trigger), when known. */
+  trigger?: string;
 }
 
 export interface Issue {

@@ -88,6 +88,14 @@ async function zipDirectory(read: ReadRange, total: number): Promise<ZipEntry[]>
   return out;
 }
 
+/** A stored (uncompressed) entry as a slice of the archive, so it is never copied into memory as a whole. */
+async function innerBlob(read: ReadRange, e: ZipEntry, data: Blob): Promise<Blob> {
+  const head = view(await read(e.offset, e.offset + 30));
+  if (head.byteLength < 30 || head.getUint32(0, true) !== 0x04034b50) throw new Error('broken ZIP entry');
+  const start = e.offset + 30 + head.getUint16(26, true) + head.getUint16(28, true);
+  return data.slice(start, start + e.compSize);
+}
+
 /** One entry's bytes: only its own compressed data is read from the archive. */
 async function readEntry(read: ReadRange, e: ZipEntry): Promise<Uint8Array> {
   if (e.flags & 1) throw new Error('the file is encrypted');
@@ -101,6 +109,14 @@ async function readEntry(read: ReadRange, e: ZipEntry): Promise<Uint8Array> {
   throw new Error(`unsupported ZIP compression (method ${e.method})`);
 }
 
+/**
+ * ZIPs inside the export that hold activity files: Garmin puts the original FIT files in
+ * DI_CONNECT/DI-Connect-Uploaded-Files/UploadedFiles_*.zip. These are opened one level deep only,
+ * each within the usual size cap and all of them together within MAX_NESTED_BYTES.
+ */
+export const isActivityZip = (path: string) => !/(^|\/)(__MACOSX\/|\.)/.test(path) && /\.zip$/i.test(path) && /(uploaded|activit|fit|gpx|tcx)/i.test(path.split('/').pop()!);
+export const MAX_NESTED_BYTES = 2 * 1024 * 1024 * 1024;
+
 const sizeOf = (d: Blob | Uint8Array) => (d instanceof Uint8Array ? d.length : d.size);
 
 /**
@@ -110,22 +126,31 @@ const sizeOf = (d: Blob | Uint8Array) => (d instanceof Uint8Array ? d.length : d
  */
 export async function expandInputs(inputs: RawInput[]): Promise<VFile[]> {
   const out: VFile[] = [];
+  let nested = 0;
+  const openZip = async (label: string, data: Blob | Uint8Array, prefix: string, depth: number) => {
+    const read = ranges(data);
+    let entries: ZipEntry[];
+    try {
+      entries = await zipDirectory(read, sizeOf(data));
+    } catch (e) {
+      throw new Error(`"${label}" is not a readable ZIP archive (${(e as Error).message})`);
+    }
+    for (const e of entries) {
+      const name = normPath(e.name);
+      if (name.endsWith('/') || e.size > MAX_ENTRY_BYTES) continue;
+      if (isWanted(name)) out.push({ path: prefix + name, read: () => readEntry(read, e) });
+      else if (depth === 0 && isActivityZip(name) && nested + e.size <= MAX_NESTED_BYTES) {
+        nested += e.size;
+        // A stored inner ZIP is a plain byte range of the outer one; a compressed one has to be unpacked.
+        const inner = e.method === 0 && data instanceof Blob ? await innerBlob(read, e, data) : await readEntry(read, e);
+        try { await openZip(name, inner, `${name}/`, depth + 1); } catch { /* an unreadable inner archive: skip it */ }
+      }
+    }
+  };
   for (const inp of inputs) {
     const path = normPath(inp.path);
-    if (/\.zip$/i.test(path)) {
-      const read = ranges(inp.data);
-      let entries: ZipEntry[];
-      try {
-        entries = await zipDirectory(read, sizeOf(inp.data));
-      } catch (e) {
-        throw new Error(`"${inp.path}" is not a readable ZIP archive (${(e as Error).message})`);
-      }
-      for (const e of entries) {
-        const name = normPath(e.name);
-        if (name.endsWith('/') || !isWanted(name) || e.size > MAX_ENTRY_BYTES) continue;
-        out.push({ path: name, read: () => readEntry(read, e) });
-      }
-    } else if (isWanted(path)) {
+    if (/\.zip$/i.test(path)) await openZip(inp.path, inp.data, '', 0);
+    else if (isWanted(path)) {
       out.push({ path, read: async () => (inp.data instanceof Uint8Array ? inp.data : new Uint8Array(await inp.data.arrayBuffer())) });
     }
   }

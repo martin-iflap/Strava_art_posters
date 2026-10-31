@@ -71,15 +71,24 @@ TSS, NP, IF, decoupling and the zones are in the activities CSV export too.
 | **Week spans, zone periods** | Strava training log | Weekly charts and the week table by half-year (‹ 2026 Jan – Jun ›); zones for all time, last 12 months or any year |
 | **Three new posters** | – | Route bloom, stream of seasons, year spiral |
 
+## Added in the third round
+
+| Feature | Where others have it | Here |
+| --- | --- | --- |
+| **Laps** | TrainingPeaks, Garmin Connect, Strava | Device laps from FIT and TCX files: time, distance, pace or speed, HR, power, NP, IF, climb, cadence; selecting a lap zooms the charts to it |
+| **Garmin export** | – | The whole Garmin data export can be dropped as it is: the nested `UploadedFiles_*.zip` archives are opened, everything else skipped |
+| **Remember on this device** | All (accounts) | Optional: thresholds, earlier thresholds and goal saved in this browser only; unticking deletes them |
+| **Heart-rate strata poster** | – | Every activity a layer, as wide as it was long, coloured by heart rate |
+
 ## Still missing: possible next steps
 
 ✅ = possible with export data, ⚠️ = needs input from the user, ❌ = not in the export.
 
 1. ✅ **Swim TSS (sTSS)** from threshold swim pace (TrainingPeaks: IF³ × hours × 100). Strava's pool swims rarely carry streams, so it would mostly use the CSV averages.
 2. ✅ **Per-activity HR zones by sport in the totals**: the "all sports" zone totals use one zone table (cycling or running); TrainingPeaks keeps one set per sport.
-3. ✅ **Interval detection** (laps and work/rest blocks from the power or pace stream).
+3. ✅ **Interval detection** (work/rest blocks from the power or pace stream, for files without laps; device laps are read already).
 4. ✅ **Segment-like climbs**: detect named-less climbs (length, gradient, VAM) and rank repeats of them.
-5. ⚠️ **Remembering settings** (thresholds, goals) between visits. Today only theme and map background are stored, on purpose; a "remember my thresholds on this device" switch would be the honest way.
+5. ✅ **Garmin activity names**: the Garmin export's `summarizedActivities` JSON has names and could be matched to the FIT files by start time.
 6. ❌ Segments and leaderboards, planned workouts and compliance, HRV, sleep and wellness, VO2max and training-effect estimates from the device: none of this is in the export, or it needs Strava's servers.
 
 ## How the numbers are worked out (and how close they are to TrainingPeaks)

@@ -4,7 +4,7 @@ import { summarize } from '../stats/summary';
 import { distance, distanceUnit, elevation, elevationUnit } from '../util/units';
 import { parts } from '../util/time';
 
-export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space' | 'bloom' | 'stream' | 'spiral';
+export type PosterType = 'facets' | 'overlay' | 'calendar' | 'ridgelines' | 'season' | 'circles' | 'timeofday' | 'punchcard' | 'rings' | 'cumulative' | 'climb' | 'world' | 'todweek' | 'landscape' | 'space' | 'bloom' | 'stream' | 'spiral' | 'strata';
 export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'facets', name: 'Route facets' },
   { id: 'overlay', name: 'All routes' },
@@ -24,6 +24,7 @@ export const POSTER_TYPES: { id: PosterType; name: string }[] = [
   { id: 'bloom', name: 'Route bloom' },
   { id: 'stream', name: 'Stream of seasons' },
   { id: 'spiral', name: 'Year spiral' },
+  { id: 'strata', name: 'Heart-rate strata' },
 ];
 
 export interface Theme { id: string; name: string; bg: string; fg: string; muted: string; accent: string }

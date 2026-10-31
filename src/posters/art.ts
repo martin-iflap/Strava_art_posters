@@ -195,3 +195,58 @@ export function spiral(acts: Activity[], o: PosterOptions, f: Frame): Poster {
   }
   return wrapSvg(f, o, body);
 }
+
+const MAX_STRATA = 400;
+
+/**
+ * Heart-rate strata: every activity with heart rate is one layer, oldest at the bottom like sediment.
+ * A layer is as wide as the activity was long (centred, so the stack grows an outline of its own) and
+ * coloured along its length by heart rate in five bands of your highest heart rate.
+ */
+export function strata(acts: Activity[], o: PosterOptions, f: Frame): Poster {
+  let rows = acts.filter((a) => a.series?.hr && a.series.hr.length > 2).sort((a, b) => a.startMs - b.startMs);
+  if (!rows.length) return wrapSvg(f, o, emptyMessage(f, 'No heart-rate data in this selection'));
+  if (rows.length > MAX_STRATA) { const step = rows.length / MAX_STRATA; rows = Array.from({ length: MAX_STRATA }, (_, i) => rows[Math.floor(i * step)]!); }
+  const maxes = rows.map((a) => a.maxHr ?? Math.max(...a.series!.hr!)).sort((x, y) => x - y);
+  const top = maxes[Math.floor(maxes.length * 0.97)] ?? maxes[maxes.length - 1]!;
+  const times = rows.map((a) => a.movingS || a.elapsedS).sort((x, y) => x - y);
+  const longest = times[Math.floor(times.length * 0.95)] ?? times[times.length - 1]!;
+  const t = f.theme;
+  const cols = [mix(t.bg, t.fg, 0.16), mix(t.bg, t.accent, 0.45), t.accent, mix(t.accent, t.fg, 0.5), t.fg];
+  const band = (hr: number) => { const r = hr / top; return r < 0.6 ? 0 : r < 0.7 ? 1 : r < 0.8 ? 2 : r < 0.9 ? 3 : 4; };
+  const legendH = 34;
+  const H = f.h - legendH, left = f.x + 54, W = f.w - 54;
+  const rowH = H / rows.length;
+  const gap = rowH > 3 ? rowH * 0.18 : 0;
+  const cx = left + W / 2;
+  // one path per colour band (each piece of a layer a horizontal stroke): five shapes in all, so even
+  // a poster of 400 layers rasterises quickly at print size
+  const segs: string[][] = cols.map(() => []);
+  let marks = '';
+  let lastYear = -1;
+  const sw = Math.max(0.6, rowH - gap);
+  rows.forEach((a, i) => {
+    const y = f.y + H - (i + 1) * rowH;
+    const w = Math.max(6, Math.min(1, (a.movingS || a.elapsedS) / longest) * W);
+    const x0 = cx - w / 2;
+    const hr = a.series!.hr!;
+    const n = hr.length;
+    let start = 0;
+    for (let k = 1; k <= n; k++) {
+      if (k < n && band(hr[k]!) === band(hr[start]!)) continue;
+      segs[band(hr[start]!)]!.push(`M${n1(x0 + (start / n) * w)} ${n1(y + rowH / 2)}h${n1(((k - start) / n) * w + 0.3)}`);
+      start = k;
+    }
+    const yr = parts(a.startMs, o.tz).y;
+    if (yr !== lastYear) {
+      lastYear = yr;
+      marks += `<line x1="${n1(f.x)}" x2="${n1(left - 8)}" y1="${n1(y + rowH)}" y2="${n1(y + rowH)}" stroke="${t.muted}" stroke-width="1"/><text x="${n1(f.x)}" y="${n1(y + rowH - 5)}" font-size="14" fill="${t.muted}">${yr}</text>`;
+    }
+  });
+  let body = `<g fill="none" stroke-width="${n1(sw)}" stroke-linecap="butt">` + segs.map((d, i) => (d.length ? `<path class="stratum" stroke="${cols[i]}" d="${d.join('')}"/>` : '')).join('') + '</g>' + marks;
+  const names = ['< 60 %', '60–70 %', '70–80 %', '80–90 %', '> 90 %'];
+  const lw = f.w / 5;
+  body += names.map((nm, i) => `<rect x="${n1(f.x + i * lw)}" y="${n1(f.y + f.h - 16)}" width="16" height="16" rx="3" fill="${cols[i]}" stroke="${t.muted}" stroke-opacity="0.4"/><text x="${n1(f.x + i * lw + 24)}" y="${n1(f.y + f.h - 2)}" font-size="15" fill="${t.muted}">${esc(nm)}</text>`).join('');
+  body += `<text x="${n1(f.x + f.w)}" y="${n1(f.y + f.h - 24)}" font-size="13" text-anchor="end" fill="${t.muted}">of ${int(top)} bpm</text>`;
+  return wrapSvg(f, o, body);
+}

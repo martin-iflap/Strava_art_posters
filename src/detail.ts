@@ -251,6 +251,52 @@ export function activityView(a: Activity, c: DetailContext): HTMLElement {
       h('p', { class: 'small' }, `Fastest stretch of each distance inside this activity, ranked against your other ${a.sport.toLowerCase()} activities.`));
   }
 
+  // laps from the device: selecting one zooms the charts to it
+  if (a.laps && a.laps.length > 1) {
+    const laps = a.laps;
+    const pace = PACE_SPORTS.has(a.sport);
+    const unitM = u === 'metric' ? 1000 : KM_PER_MI * 1000;
+    const secsOf = (l: (typeof laps)[number]) => (l.movingS > 0 ? l.movingS : l.timeS);
+    const has = { hr: laps.some((l) => l.avgHr), pw: laps.some((l) => l.avgPower), np: laps.some((l) => l.np), cad: laps.some((l) => l.avgCadence), ele: laps.some((l) => l.elevGainM > 0) };
+    const usePower = has.pw && !pace;
+    const intensity = (l: (typeof laps)[number]) => (usePower ? l.np ?? l.avgPower ?? 0 : l.distanceM > 0 && secsOf(l) > 0 ? l.distanceM / secsOf(l) : 0);
+    const top = Math.max(...laps.map(intensity), 1e-9);
+    const ftp = c.thresholds.ftp;
+    const heads = ['Lap', 'Time', 'Distance', pace ? `Pace (/${du})` : `Speed (${speedUnit(u)})`, ...(has.hr ? ['Avg HR', 'Max HR'] : []), ...(has.pw ? ['Avg W'] : []), ...(has.np ? ['NP'] : []), ...(has.np && ftp ? ['IF'] : []), ...(has.ele ? [`Climb (${elevationUnit(u)})`] : []), ...(has.cad ? ['Cadence'] : []), ''];
+    let picked = -1;
+    const body: Row[] = laps.map((l, i) => {
+      const bar = h('div', { class: 'splitbar', title: usePower ? `${fmt(intensity(l), 0)} W` : '' });
+      bar.style.width = `${Math.max(4, (intensity(l) / top) * 100)}%`;
+      const secs = secsOf(l);
+      return {
+        key: String(i), label: `Zoom the charts to lap ${i + 1}`,
+        cells: [String(i + 1), formatDuration(l.timeS), l.distanceM > 0 ? fmt(distance(l.distanceM, u), 2) : dash,
+          l.distanceM > 0 && secs > 0 ? (pace ? formatDuration((secs / l.distanceM) * unitM) : fmt(speed(l.distanceM / secs, u))) : dash,
+          ...(has.hr ? [l.avgHr ? String(l.avgHr) : dash, l.maxHr ? String(l.maxHr) : dash] : []),
+          ...(has.pw ? [l.avgPower !== null ? String(l.avgPower) : dash] : []),
+          ...(has.np ? [l.np ? String(Math.round(l.np)) : dash] : []),
+          ...(has.np && ftp ? [l.np ? fmt(l.np / ftp, 2) : dash] : []),
+          ...(has.ele ? [fmt(elevation(l.elevGainM, u), 0)] : []),
+          ...(has.cad ? [l.avgCadence ? String(l.avgCadence) : dash] : []),
+          bar],
+        onClick: () => {
+          lapTable.querySelectorAll('tr.selected').forEach((tr) => tr.classList.remove('selected'));
+          if (picked === i || !(totalM > 0)) { picked = -1; zoom.set(null); return; }
+          picked = i;
+          lapTable.tBodies[0]!.rows[i]!.classList.add('selected');
+          zoom.set([l.startM / totalM, Math.min(1, (l.startM + Math.max(l.distanceM, 1)) / totalM)]);
+          charts[0]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        },
+      };
+    });
+    const lapTable = table(heads, body, { numFrom: 1 });
+    zoom.on((r) => { if (!r && picked >= 0) { picked = -1; lapTable.querySelectorAll('tr.selected').forEach((tr) => tr.classList.remove('selected')); } });
+    const manual = laps.filter((l) => l.trigger === 'manual').length;
+    const auto = laps.find((l) => l.trigger === 'distance' || l.trigger === 'time');
+    root.append(h('h2', {}, `Laps (${laps.length})`), h('div', { class: 'card scroll laps-card' }, lapTable),
+      h('p', { class: 'small' }, `From the device${auto ? ` (auto-lap by ${auto.trigger})` : manual > 1 ? ' (lap button)' : ''}. Time is the lap timer; ${pace ? 'pace' : 'speed'} uses moving time. Select a lap to zoom the charts to it, select it again to zoom out. The bar shows ${usePower ? 'normalized power' : pace ? 'pace' : 'speed'} against the strongest lap.`));
+  }
+
   // splits: selecting a row shows that stretch on the map and charts
   const rows = splitRows(a, u);
   if (rows.length) {

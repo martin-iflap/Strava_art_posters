@@ -160,10 +160,25 @@ function toGpx(name: string, type: string, sm: Sample[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx creator="Fake" version="1.1" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">\n<metadata><time>${new Date(sm[0]!.t).toISOString()}</time></metadata>\n<trk><name>${esc(name)}</name><type>${type}</type><trkseg>\n${pts.join('\n')}\n</trkseg></trk></gpx>\n`;
 }
 
+/** Auto-lap boundaries (sample indexes where a lap starts), every `every` metres like a device's auto-lap. */
+function lapStarts(sm: Sample[], every: number): number[] {
+  const out = [0];
+  for (let i = 1; i < sm.length; i++) if (Math.floor(sm[i]!.dist / every) > Math.floor(sm[i - 1]!.dist / every) && sm.length - i > 3) out.push(i);
+  return out;
+}
+const LAP_EVERY: Record<string, number> = { Biking: 10_000, Running: 1000, Other: 1e12 };
+const FIT_LAP_EVERY: Record<number, number> = { 2: 10_000, 1: 1000 };
+
 function toTcx(sport: string, sm: Sample[]): string {
   const pts = sm.map((p) =>
     `<Trackpoint><Time>${new Date(p.t).toISOString()}</Time><Position><LatitudeDegrees>${p.lat.toFixed(6)}</LatitudeDegrees><LongitudeDegrees>${p.lon.toFixed(6)}</LongitudeDegrees></Position><AltitudeMeters>${p.ele.toFixed(1)}</AltitudeMeters><DistanceMeters>${p.dist.toFixed(1)}</DistanceMeters>${num(p.hr) ? `<HeartRateBpm><Value>${p.hr}</Value></HeartRateBpm>` : ''}${num(p.cad) ? `<Cadence>${p.cad}</Cadence>` : ''}${num(p.power) ? `<Extensions><TPX xmlns="http://www.garmin.com/xmlschemas/ActivityExtension/v2"><Watts>${p.power}</Watts></TPX></Extensions>` : ''}</Trackpoint>`);
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"><Activities><Activity Sport="${sport}"><Id>${new Date(sm[0]!.t).toISOString()}</Id><Lap StartTime="${new Date(sm[0]!.t).toISOString()}"><Track>\n${pts.join('\n')}\n</Track></Lap></Activity></Activities></TrainingCenterDatabase>\n`;
+  const starts = lapStarts(sm, LAP_EVERY[sport] ?? 1e12);
+  const laps = starts.map((i0, k) => {
+    const i1 = (starts[k + 1] ?? sm.length) - 1;
+    const end = sm[Math.min(sm.length - 1, i1 + 1)]!;
+    return `<Lap StartTime="${new Date(sm[i0]!.t).toISOString()}"><TotalTimeSeconds>${((end.t - sm[i0]!.t) / 1000).toFixed(0)}</TotalTimeSeconds><DistanceMeters>${(end.dist - sm[i0]!.dist).toFixed(1)}</DistanceMeters><TriggerMethod>${k + 1 < starts.length ? 'Distance' : 'Manual'}</TriggerMethod><Track>\n${pts.slice(i0, i1 + 1).join('\n')}\n</Track></Lap>`;
+  }).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"><Activities><Activity Sport="${sport}"><Id>${new Date(sm[0]!.t).toISOString()}</Id>${laps}</Activity></Activities></TrainingCenterDatabase>\n`;
 }
 
 const SEMI = 2 ** 31 / 180;
@@ -188,6 +203,19 @@ function toFit(sport: number, sm: Sample[]): Uint8Array {
     ], 1);
   }
   const last = sm[sm.length - 1]!;
+  const starts = lapStarts(sm, FIT_LAP_EVERY[sport] ?? 1e12);
+  starts.forEach((i0, k) => {
+    const end = sm[Math.min(sm.length - 1, starts[k + 1] ?? sm.length - 1)]!;
+    const secs = (end.t - sm[i0]!.t) / 1000;
+    e.writeMessage(19, [
+      { number: 253, size: 4, baseType: FitBaseType.Uint32, value: ts(end.t) },
+      { number: 2, size: 4, baseType: FitBaseType.Uint32, value: ts(sm[i0]!.t) },
+      { number: 7, size: 4, baseType: FitBaseType.Uint32, value: Math.round(secs * 1000) },
+      { number: 8, size: 4, baseType: FitBaseType.Uint32, value: Math.round(secs * 1000) },
+      { number: 9, size: 4, baseType: FitBaseType.Uint32, value: Math.round((end.dist - sm[i0]!.dist) * 100) },
+      { number: 24, size: 1, baseType: FitBaseType.Enum, value: k + 1 < starts.length ? 2 : 7 },
+    ], 3);
+  });
   e.writeMessage(18, [
     { number: 253, size: 4, baseType: FitBaseType.Uint32, value: ts(last.t) },
     { number: 2, size: 4, baseType: FitBaseType.Uint32, value: ts(sm[0]!.t) },

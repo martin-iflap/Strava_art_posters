@@ -300,7 +300,7 @@ async function main(): Promise<void> {
       ['climb', 'dark', 'a3', 'climb'], ['climb', 'light', 'square', 'climb-square'],
       ['world', 'dark', 'a3', 'world'], ['world', 'aurora', 'square', 'world-square'], ['todweek', 'ember', 'a3', 'todweek'],
       ['landscape', 'light', 'a3', 'landscape'], ['space', 'dark', 'a3', 'space'], ['space', 'ember', 'square', 'space-square'],
-      ['bloom', 'dark', 'a3', 'bloom'], ['stream', 'aurora', 'a3', 'stream'], ['spiral', 'light', 'square', 'spiral'],
+      ['bloom', 'dark', 'a3', 'bloom'], ['stream', 'aurora', 'a3', 'stream'], ['spiral', 'light', 'square', 'spiral'], ['strata', 'ember', 'a3', 'strata'],
     ];
     const pctx = await fakeTiles(await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true }));
     const pp = await pctx.newPage();

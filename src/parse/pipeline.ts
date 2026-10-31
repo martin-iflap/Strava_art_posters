@@ -30,6 +30,19 @@ export async function parseTrackFile(bytes: Uint8Array): Promise<ParsedTrack> {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * A name for an activity that only has a file (Garmin exports, loose files): Strava-style "Morning Ride"
+ * from the start time, since device file names are numbers (and Garmin's start with the account e-mail).
+ */
+function fileName(file: string | undefined, startMs: number, sport: string | undefined): string {
+  const base = file?.split('/').pop() ?? '';
+  const plain = base.replace(/\.(fit|gpx|tcx)(\.gz)?$/i, '');
+  if (plain && !/@|^[\d_\-.]+$/.test(plain)) return base;
+  const hr = new Date(startMs).getHours();
+  const part = hr < 5 ? 'Night' : hr < 12 ? 'Morning' : hr < 14 ? 'Lunch' : hr < 18 ? 'Afternoon' : hr < 22 ? 'Evening' : 'Night';
+  return `${part} ${sport && sport !== 'Other' ? sport : 'Activity'}`;
+}
+
 function buildActivity(row: CsvActivity | null, tr: ParsedTrack | null, file: string | undefined): Activity | { error: string } {
   const s = tr ? summarizeTrack(tr) : null;
   const startMs = row?.startMs ?? s?.startMs ?? null;
@@ -40,8 +53,8 @@ function buildActivity(row: CsvActivity | null, tr: ParsedTrack | null, file: st
   const elapsedS = row?.elapsedS ?? s?.elapsedS ?? movingS;
   if (!row && !(distanceM > 0 || movingS > 0)) return { error: 'file contains no distance or time' };
   return {
-    id: row?.id ?? `file-${file}`,
-    name: row?.name ?? tr?.name ?? file?.split('/').pop() ?? 'Activity',
+    id: row?.id ?? `file-${file?.replace(/[^/@]+@[^/_]+_?/g, '')}`, // no e-mail address (Garmin file names) in ids or links
+    name: row?.name ?? tr?.name ?? fileName(file, startMs, row?.sport ?? tr?.sport),
     sport: row?.sport ?? tr?.sport ?? 'Other',
     startMs,
     distanceM,
@@ -68,6 +81,7 @@ function buildActivity(row: CsvActivity | null, tr: ParsedTrack | null, file: st
     speedHist: s?.speedHist ?? null,
     bestEfforts: s?.bestEfforts ?? null,
     decoupling: s?.decoupling ?? null,
+    laps: s?.laps ?? null,
     file,
   };
 }

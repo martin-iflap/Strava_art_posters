@@ -1,15 +1,15 @@
 # Ride Atlas
 
-**Turn your Strava export into detailed stats and printable posters, privately, in your browser.**
+**Turn your Strava or Garmin export into detailed stats and printable posters, privately, in your browser.**
 
-Drop in the ZIP that Strava gives you. Ride Atlas shows your totals by year, month, week, weekday and sport, training load (fitness, fatigue and form) worked out the way TrainingPeaks does it, a training calendar, power, heart-rate and pace curves, best efforts, records and streaks, time in heart-rate, power and pace zones, your most-ridden routes, and a page for every activity. It also makes eighteen posters you can download as PNG, JPEG or SVG. Nothing is uploaded: there is no server, no account and no tracking.
+Drop in the ZIP that Strava or Garmin gives you. Ride Atlas shows your totals by year, month, week, weekday and sport, training load (fitness, fatigue and form) worked out the way TrainingPeaks does it, a training calendar, power, heart-rate and pace curves, best efforts, records and streaks, time in heart-rate, power and pace zones, your most-ridden routes, and a page for every activity. It also makes nineteen posters you can download as PNG, JPEG or SVG. Nothing is uploaded: there is no server, no account and no tracking.
 
 ## Privacy and safety
 
 Everything happens inside your browser tab. Your files never leave your device.
 
 - **Only what it needs is read.** Ride Atlas uses `activities.csv` and the GPX, TCX and FIT activity files, and nothing else. Photos, videos, messages, your profile and contacts are skipped by name and never opened. From a ZIP it reads the archive's table of contents and then only the activity entries, so the photos in a large export are not even loaded.
-- **Nothing is kept.** Your activities live in the tab's memory and are gone when you close or reload it. Two settings are remembered in the browser: light/dark theme and map background.
+- **Nothing is kept.** Your activities live in the tab's memory and are gone when you close or reload it. Two settings are remembered in the browser: light/dark theme and map background. Your thresholds and goal are stored too, but only if you tick **Remember on this device** (untick it to delete them).
 - **The only network traffic is map pictures.** Activity maps show an OpenStreetMap background by default (OpenTopoMap is the other choice). Like any web map, the tile server sees your IP address and which map squares you look at, so roughly where the activity you opened was. Set **Filters → Map background → Off** and the app makes no requests at all.
 - **Enforced by the browser, not just promised.** A strict Content-Security-Policy allows scripts only from the app itself, images only from the app and the two tile servers, and no connections at all (`connect-src 'none'`). Even buggy or tampered code has no way to send your data anywhere.
 - **Posters protect your home.** Route posters leave out the first and last 200 m of every route by default (**Hide route ends**: off, 200 m, 500 m or 1 km), so the place you usually start is not on them. A poster of many routes can still hint at your part of town, so look before you post. The other posters show no places, and CSV/JSON exports contain no GPS tracks.
@@ -17,11 +17,19 @@ Everything happens inside your browser tab. Your files never leave your device.
 
 [SECURITY.md](SECURITY.md) has the full threat model, the hosting headers and how to report a problem.
 
-## Get your Strava export
+## Get your data
 
-1. On strava.com open **Settings → My Account → Download or Delete Your Account → Get Started**.
-2. Choose **Request Your Archive**. Strava emails you a download link; this can take a few hours.
+**From Strava** (names, sports and every original file):
+
+1. In a web browser, sign in at strava.com and open **Settings → My Account → Download or Delete Your Account → Get Started**.
+2. In step 2 choose **Request Your Archive** (step 3 deletes the account: don't). Strava emails you a download link, usually within a few hours.
 3. Download the ZIP and drop it onto Ride Atlas as it is. An extracted folder works too.
+
+**From Garmin Connect** (every original FIT file, with laps):
+
+1. Sign in at garmin.com/account and open **Data Management → Export Your Data → Request Data Export**.
+2. Garmin emails you a link when the export is ready, usually within a day or two.
+3. Drop the ZIP as it is. The FIT files in `DI_CONNECT/DI-Connect-Uploaded-Files/UploadedFiles_*.zip` are opened for you; health, sleep and profile data are skipped. Garmin's export has no activity names, so activities are named by time of day ("Morning Ride").
 
 No export yet? Click **Try with demo data**. The demo rider and their activities are entirely made up.
 
@@ -30,8 +38,8 @@ No export yet? Click **Try with demo data**. The demo rider and their activities
 - **Training load.** Training stress for every activity as TrainingPeaks scores it: TSS from power and FTP, rTSS from normalized graded pace and threshold pace for runs, otherwise hrTSS from heart rate. Dated thresholds, so older activities use the FTP of their day. The fitness / fatigue / form chart (CTL, ATL, TSB) with a plain-language reading, daily TSS dots, drag-to-zoom and a summary of the period in view; weekly stress stacked by sport, chosen by half-year; fitness per sport; an aerobic-efficiency trend; a training calendar; and estimates of FTP and threshold pace.
 - **Curves and best efforts.** Best power, heart rate and pace for every duration (about 120 points from 1 s to 10 h), all time against the last 12 months, with a critical-power model (CP and W′), W/kg, a peak-power-by-year table, and the activity behind any point you select. Your fastest 400 m to marathon for runs and 5 km to 100 miles for rides.
 - **Stats.** An overview with a goal for the week, month or year, year-to-date and weekly progress charts (any half-year), the Eddington number, records and streaks, tables by sport, year, month, weekday and week, time in zones for any year or the last 12 months, with the low / moderate / high intensity mix (set your max or threshold heart rate, FTP and threshold pace), most-ridden routes, a sortable activity list and an import report listing any skipped files and why. Click a row (a year, a sport, a record, a route) to list its activities.
-- **Activity pages.** A route map you can drag and zoom, full-width elevation, speed, heart-rate and power charts with a shared hover readout that zoom together when you drag across one, effort numbers (TSS or rTSS or hrTSS, intensity factor, normalized power, normalized graded pace, variability index, work, efficiency factor, aerobic decoupling), power and pace curves against your best, heart-rate, power and pace zones, best efforts with PR badges, zones, per-km or per-mile splits, and how the activity ranks against your others and against repeats of the same route.
-- **Posters.** Route facets, all routes, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year, mountains climbed, around the world, time of day by weekday, landscape, to space, and three abstract ones: route bloom (every route from one centre, like petals, optionally kaleidoscopic), stream of seasons (weekly volume per sport as flowing ribbons) and year spiral (one turn per year, a stroke per day). Choose a theme (light, dark, ember, aurora) and a size (A3 portrait, square, phone wallpaper), add an optional stats strip, tune each poster, and download one as PNG, JPEG or SVG or all of them as a ZIP.
+- **Activity pages.** A route map you can drag and zoom, full-width elevation, speed, heart-rate and power charts with a shared hover readout that zoom together when you drag across one, effort numbers (TSS or rTSS or hrTSS, intensity factor, normalized power, normalized graded pace, variability index, work, efficiency factor, aerobic decoupling), power and pace curves against your best, heart-rate, power and pace zones, best efforts with PR badges, zones, the laps from your device (FIT and TCX; select one to zoom the charts to it), per-km or per-mile splits, and how the activity ranks against your others and against repeats of the same route.
+- **Posters.** Route facets, all routes, calendar heatmap, elevation ridgelines, season overview, activity bubbles, time-of-day ridges, weekly rhythm, year rings, year over year, mountains climbed, around the world, time of day by weekday, landscape, to space, and four abstract ones: route bloom (every route from one centre, like petals, optionally kaleidoscopic), stream of seasons (weekly volume per sport as flowing ribbons) year spiral (one turn per year, a stroke per day) and heart-rate strata (every activity a layer, coloured by heart rate). Choose a theme (light, dark, ember, aurora) and a size (A3 portrait, square, phone wallpaper), add an optional stats strip, tune each poster, and download one as PNG, JPEG or SVG or all of them as a ZIP.
 - **Exports.** Activities, monthly, yearly, sport and zone tables as CSV, or everything as JSON.
 - Filters for sport, km/mi and local/UTC time apply everywhere. The sidebar folds away for more room. Light and dark mode follow your system, with a manual switch. Browser Back and Forward work throughout.
 

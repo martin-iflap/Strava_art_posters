@@ -7,7 +7,7 @@ import { climb } from './climb';
 import { world } from './world';
 import { landscape, pickLabel, pickProfiles } from './landscape';
 import { space } from './space';
-import { bloom, spiral, stream } from './art';
+import { bloom, spiral, strata, stream } from './art';
 import { circles, cumulative, punchCard, recentYears, rings, timeOfDay } from './more';
 import { emptyMessage, esc, int, makeFrame, mix, n1, rangeLabel, ramp, wrapSvg, type Frame, type Poster, type PosterOptions, type PosterType } from './common';
 
@@ -340,6 +340,11 @@ export function renderPoster(type: PosterType, all: Activity[], o: PosterOptions
     case 'spiral': {
       const f = makeFrame(all, o, 'Year spiral', `${range} · one turn per year · each stroke a day's ${metric}`, o.strip);
       return spiral(all, o, f);
+    }
+    case 'strata': {
+      const n = all.filter((a) => a.series?.hr && a.series.hr.length > 2).length;
+      const f = makeFrame(all, o, 'Heart-rate strata', `${range} · ${n > 400 ? '400 of ' : ''}${n} activities with heart rate, oldest at the bottom · width is duration`, o.strip);
+      return strata(all, o, f);
     }
     case 'climb': {
       const mode = o.climbYear === 'all' || o.climbYear === 'overlay' ? o.climbYear : o.climbYear ?? latestYear(all, o.tz) ?? new Date().getFullYear();

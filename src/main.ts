@@ -15,6 +15,7 @@ import { clusterRoutes, type RouteCluster } from './stats/routes';
 import { byPeriod, byWeekday, bySport, filterSport, records, sportsOf, summarize, type Summary } from './stats/summary';
 import { selectActivities, type Selection } from './stats/select';
 import { findRegions, regionFilter, type Region, type RegionChoice } from './stats/regions';
+import { TRAINING_KEY, decodeTraining, encodeTraining } from './settings';
 import { RUN_LIKE, activityZones, hrZones, observedMaxHr, paceZones, powerZones, zoneTotals, zonesBy, type HrZoneConfig, type Zone, type ZoneRow } from './stats/zones';
 import type { Activity, ImportResult, Tz, Units } from './types';
 import { distance, distanceUnit, elevation, elevationUnit, formatDuration, formatHours, speed, speedUnit } from './util/units';
@@ -68,9 +69,13 @@ interface State {
   curveKind: 'power' | 'hr' | 'pace';
   curveSport: string | null;
   curvePick: { kind: State['curveKind']; x: number } | null;
+  /** heart-rate setting typed in by the user (not the max taken from the data), so it is worth remembering */
+  hrByUser: boolean;
+  /** keep thresholds and the goal in this browser ("Remember on this device") */
+  remember: boolean;
 }
 
-const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, pick: null, mapTiles: defaultTileSource().id, volMetric: 'distance', weekSpan: 'recent', zoneSpan: 'all', sideHidden: false, restHr: null, sex: 'm', pace: null, weight: null, history: [], calMonth: null, goal: null, curveKind: 'power', curveSport: null, curvePick: null };
+const state: State = { result: null, sport: 'all', units: 'metric', tz: 'local', hr: null, ftp: null, showAll: false, view: 'stats', activityId: null, query: '', sortKey: 'date', theme: 'auto', sheet: false, monthYear: null, pick: null, mapTiles: defaultTileSource().id, volMetric: 'distance', weekSpan: 'recent', zoneSpan: 'all', sideHidden: false, restHr: null, sex: 'm', pace: null, weight: null, history: [], calMonth: null, goal: null, curveKind: 'power', curveSport: null, curvePick: null, hrByUser: false, remember: false };
 let animate = true;
 const poster = { type: 'facets' as PosterType, ...DEFAULT_POSTER };
 const app = document.getElementById('app')!;
@@ -106,6 +111,29 @@ try {
   if (m === 'off') state.mapTiles = null;
   else if (tileSource(m) && (referrerAvailable() || !tileSource(m)!.needsReferrer)) state.mapTiles = m;
 } catch { /* storage unavailable: keep the default */ }
+// Thresholds and the goal, only if the user asked for them to be remembered.
+try {
+  const t = decodeTraining(localStorage.getItem(TRAINING_KEY));
+  if (t) {
+    Object.assign(state, { ftp: t.ftp, restHr: t.restHr, sex: t.sex, pace: t.pace, weight: t.weight, history: t.history, goal: t.goal, remember: true });
+    if (t.hr) { state.hr = t.hr; state.hrByUser = true; }
+  }
+} catch { /* storage unavailable: nothing remembered */ }
+let savedTraining: string | null = null;
+/** Write the remembered settings when they changed (called on every render), or forget them when switched off. */
+function saveTraining(): void {
+  try {
+    if (!state.remember) { if (savedTraining !== '') localStorage.removeItem(TRAINING_KEY); savedTraining = ''; return; }
+    const text = encodeTraining({ hr: state.hrByUser ? state.hr : null, ftp: state.ftp, restHr: state.restHr, sex: state.sex, pace: state.pace, weight: state.weight, history: state.history, goal: state.goal });
+    if (text !== savedTraining) { localStorage.setItem(TRAINING_KEY, text); savedTraining = text; }
+  } catch { /* storage full or blocked: settings last until the tab closes */ }
+}
+/** The "Remember on this device" switch; shown with the thresholds and with the goal (one setting). */
+function rememberToggle(): HTMLElement {
+  return h('label', { class: 'remember small', title: 'Saves your thresholds, earlier thresholds and goal in this browser (never your activities). Turn off to delete them.' },
+    h('input', { type: 'checkbox', checked: state.remember, onchange: (e) => { state.remember = (e.target as HTMLInputElement).checked; render(); } }),
+    ' Remember on this device');
+}
 const setMapTiles = (id: string | null) => {
   state.mapTiles = tileSource(id) ? id : null;
   try { localStorage.setItem('ride-atlas-map', state.mapTiles ?? 'off'); } catch { /* ignore */ }
@@ -138,7 +166,7 @@ function startImport(msg: WorkerIn): void {
       worker = null;
       state.result = m.result;
       state.sport = 'all';
-      state.hr = null;
+      if (!state.hrByUser) state.hr = null;
       state.monthYear = null;
       state.pick = null;
       state.showAll = false;
@@ -187,8 +215,8 @@ function renderImport(error?: string): void {
   const zipInput = h('input', { type: 'file', multiple: true, hidden: true, 'aria-label': 'Choose ZIP or files', accept: '.zip,.csv,.gpx,.tcx,.fit,.gz', onchange: () => importFiles(fromFileList(zipInput.files ?? [])) });
   const dirInput = h('input', { type: 'file', hidden: true, webkitdirectory: true, 'aria-label': 'Choose folder', onchange: () => importFiles(fromFileList(dirInput.files ?? [])) });
   const drop = h('section', { class: 'drop', 'aria-labelledby': 'drop-title' },
-    h('h2', { id: 'drop-title' }, 'Drop your Strava export here'),
-    h('p', {}, 'The ZIP file, the extracted folder, or loose files. Everything is processed in your browser; nothing is uploaded.'),
+    h('h2', { id: 'drop-title' }, 'Drop your Strava or Garmin export here'),
+    h('p', {}, 'The ZIP file as you downloaded it, the extracted folder, or loose GPX, TCX and FIT files. Everything is processed in your browser; nothing is uploaded.'),
     error ? h('p', { class: 'warn', role: 'alert' }, error) : null,
     h('div', { class: 'row' },
       h('button', { class: 'primary', onclick: () => zipInput.click() }, 'Choose ZIP or files'),
@@ -203,34 +231,53 @@ function renderImport(error?: string): void {
     if (e.dataTransfer) importFiles(await fromDrop(e.dataTransfer));
   });
   const feature = (title: string, text: string) => h('li', {}, h('b', {}, title), h('span', {}, text));
+  const ext = (href: string, text: string) => h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+  const source = (id: string, title: string, sub: string, ...body: (Node | string)[]) =>
+    h('details', { class: 'card source', id }, h('summary', {}, h('b', {}, title), h('span', { class: 'muted small' }, sub)), ...body);
+  const sources = h('section', { 'aria-labelledby': 'get-title' },
+    h('h2', { id: 'get-title' }, 'Get all your activities in one go'),
+    h('p', {}, 'Both services give you every activity you ever recorded as one download. Pick yours for the exact steps.'),
+    h('div', { class: 'sources' },
+      source('from-strava', 'From Strava', 'Names, sports and every original file. Usually ready within a few hours.',
+        h('ol', { class: 'steps' },
+          h('li', {}, 'In a web browser (not the phone app), sign in at ', ext('https://www.strava.com/account', 'strava.com'), '.'),
+          h('li', {}, 'Open the menu under your profile picture → ', h('b', {}, 'Settings'), ' → ', h('b', {}, 'My Account'), '.'),
+          h('li', {}, 'Under ', h('b', {}, 'Download or Delete Your Account'), ' select ', h('b', {}, 'Get Started'), '.'),
+          h('li', {}, 'In step 2, ', h('b', {}, 'Download Request'), ', select ', h('b', {}, 'Request Your Archive'), '. Do not continue to step 3: that one deletes your account.'),
+          h('li', {}, 'Strava e-mails you a link when the archive is ready (often within a few hours, sometimes longer). Download the ZIP, named like ', h('code', {}, 'export_12345678.zip'), '.'),
+          h('li', {}, 'Drop the ZIP on the box above, without unpacking it. Only ', h('code', {}, 'activities.csv'), ' and the files in ', h('code', {}, 'activities/'), ' are read.'))),
+      source('from-garmin', 'From Garmin Connect', 'Every original FIT file, with laps. Can take a day or more.',
+        h('ol', { class: 'steps' },
+          h('li', {}, 'In a web browser, sign in to your Garmin account at ', ext('https://www.garmin.com/account/datamanagement/', 'garmin.com/account'), '.'),
+          h('li', {}, 'Open ', h('b', {}, 'Data Management'), ' → ', h('b', {}, 'Export Your Data'), ', and select ', h('b', {}, 'Request Data Export'), '.'),
+          h('li', {}, 'Garmin e-mails you a download link when the export is ready. This usually takes a day or two and can take longer for big accounts.'),
+          h('li', {}, 'Download the ZIP and drop it on the box above as it is. The activities are the FIT files Garmin keeps in ', h('code', {}, 'DI_CONNECT/DI-Connect-Uploaded-Files'), ' (inside ', h('code', {}, 'UploadedFiles_…zip'), ' archives, which are opened for you). Health, sleep and profile data are skipped unread.'),
+          h('li', {}, 'Garmin’s export has no activity names, so activities are named by time of day (“Morning Ride”). If your Garmin syncs to Strava, the Strava export has your own names.')),
+        h('p', { class: 'small' }, 'Just one activity? In Garmin Connect open it, select the gear icon → ', h('b', {}, 'Export Original'), ', and drop the downloaded file here.'))));
   app.replaceChildren(hero(
     drop,
+    sources,
     h('h2', {}, 'What you get'),
     h('ul', { class: 'features' },
       feature(`${POSTER_TYPES.length} printable posters`, 'Every route you rode, the metres you climbed, your years as rings, how far around the world you went. Download them as PNG or JPEG (A3 print size) or SVG.'),
       feature('Your stats, all of them', 'Totals by year, month, weekday and sport, records and streaks, time in heart-rate and power zones, and your most repeated routes.'),
-      feature('Every activity in detail', 'Map, elevation, speed, heart rate and power charts with a shared hover readout, and splits per kilometre.')),
+      feature('Every activity in detail', 'Map, elevation, speed, heart rate and power charts with a shared hover readout and zoom, the laps from your device, and splits per kilometre.')),
     h('div', { class: 'examples', 'aria-label': 'Example posters made from the demo data' },
       ...EXAMPLE_POSTERS.map((ex) => h('figure', {},
         h('img', { class: 'poster', src: `examples/${ex.type}.svg`, alt: `Example: ${POSTER_TYPES.find((t) => t.id === ex.type)!.name} poster`, loading: 'lazy', width: 3508, height: 4961 }),
         h('figcaption', {}, ex.caption)))),
     h('h2', {}, 'How it works'),
     h('ol', { class: 'steps' },
-      h('li', {}, 'You give it your Strava export (or GPX, TCX and FIT files from any app or device).'),
+      h('li', {}, 'You give it your Strava or Garmin export (or GPX, TCX and FIT files from any app or device).'),
       h('li', {}, 'Your browser reads the files in a background worker in this tab. There is no server to upload to, no account, no cookies and no tracking.'),
       h('li', {}, 'Stats and posters are worked out on your device. Closing or reloading the tab forgets your activities.')),
     h('h2', { id: 'privacy' }, 'Privacy and safety'),
     h('ul', { class: 'safety' },
-      feature('What is read', 'Only activities.csv and the GPX, TCX and FIT activity files. The rest of a Strava export (photos, messages, profile, contacts) is skipped by name and never opened: from a ZIP, only the activity files are read, so a large export with photos loads quickly.'),
-      feature('What is kept', 'Nothing from your files. Only two settings are remembered in this browser: light or dark theme, and the map background.'),
+      feature('What is read', 'Only activities.csv and the GPX, TCX and FIT activity files. The rest of an export (photos, messages, profile, contacts, Garmin health and sleep data) is skipped by name and never opened: from a ZIP, only the activity files are read, so a large export with photos loads quickly.'),
+      feature('What is kept', 'Nothing from your files. Two settings are remembered in this browser: light or dark theme, and the map background. Your thresholds (FTP, heart rate, pace, weight) and goal are kept only if you tick “Remember on this device”, and are deleted when you untick it.'),
       feature('What goes over the network', 'Only map pictures for the activity maps, from OpenStreetMap or OpenTopoMap. Like any web map, that server sees your IP address and which map squares you look at, so roughly where the activity you opened was. Your files and stats are never sent. Set Map background to Off in the filters and the app makes no requests at all; the page’s security policy blocks every other connection.'),
       feature('Before you share a poster', 'Route posters leave out the first and last 200 m of every route by default, so your front door is not on them (adjustable with “Hide route ends”). A poster of many routes can still show your part of town. Other posters show no places.'),
       feature('Files from anyone else', 'Files are treated as data only: nothing in them is ever run, names are shown as plain text, and a file that would unpack to more than 256 MB is refused.')),
-    h('h2', {}, 'How to get your Strava export'),
-    h('ol', { class: 'steps' },
-      h('li', {}, 'On strava.com open Settings → My Account → “Download or Delete Your Account” → “Get Started”.'),
-      h('li', {}, 'Choose “Request Your Archive”. Strava emails you a download link (this can take a while).'),
-      h('li', {}, 'Download the ZIP and drop it here. You do not need to unpack it.')),
     h('p', {}, 'Not sure yet? Try the demo data: one made-up rider, several years of invented rides, runs and walks.'),
     h('aside', { class: 'card sibling' }, h('b', {}, 'Forgot to record a ride?'), ' ', gpxToFitLink('Make a realistic activity file for it with GPX to FIT'), ', a sister app that also runs in your browser.'),
     h('p', { class: 'muted small' }, 'Ride Atlas is an independent project and is not affiliated with Strava.')));
@@ -286,6 +333,7 @@ function render(): void {
 }
 
 function renderNow(): void {
+  saveTraining();
   if (!state.result) return renderImport();
   const { result } = state;
   const all = result.activities;
@@ -295,7 +343,7 @@ function renderNow(): void {
 
 
   const navBtn = (v: 'stats' | 'posters', label: string, badge?: string) => h('button', { 'aria-current': (state.view === v || (v === 'stats' && state.view === 'activity')) ? 'page' : undefined, onclick: () => setView(v) }, label, badge ? h('span', { class: 'badge', 'aria-label': `${badge} posters` }, badge) : null);
-  const sections: [string, string][] = [['overview', 'Overview'], ['progress', 'Progress'], ['training', 'Training load'], ['calendar', 'Calendar'], ['curve', 'Curves and efforts'], ['records', 'Records'], ['periods', 'Years and months'], ['zones', 'Time in zones'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
+  const sections: [string, string][] = [['overview', 'Overview'], ['progress', 'Progress and goal'], ['calendar', 'Calendar'], ['records', 'Records'], ['periods', 'Years and months'], ['training', 'Training load'], ['zones', 'Time in zones'], ['curve', 'Curves and efforts'], ['loops', 'Routes'], ['activities', 'Activities'], ['export', 'Export'], ['issues', 'Import report']];
   const toggleSide = () => { state.sideHidden = !state.sideHidden; render(); (document.querySelector<HTMLElement>(state.sideHidden ? '.side-show' : '.side-hide'))?.focus(); };
   const sidebar = h('aside', { class: 'sidebar', 'aria-label': 'Sidebar', id: 'sidebar' },
     h('div', { class: 'brand side-top' }, h('div', {}, h('h1', {}, 'Ride Atlas'), h('p', {}, 'Private, in your browser')),
@@ -365,16 +413,17 @@ function renderNow(): void {
   } else {
     const s = summarize(acts);
     main.append(statGrid(s, acts));
+    // Order: how much and when (volume, calendar, highlights, tables), then how hard (load, zones,
+    // curves, which share the thresholds), then where (routes) and the full list.
     main.append(progressSection(acts));
-    main.append(trainingSection(all, acts));
-    main.append(curveSection(acts));
+    main.append(calendarSection(acts, thresholds()));
     main.append(recordsSection(acts));
     const add = (...els: (Node | null)[]) => append(main, els);
     if (state.sport === 'all') {
-      add(h('h2', {}, 'By sport'), h('div', { class: 'card' }, summaryTable('Sport', 'sport', bySport(all).map((x) => ({ label: x.sport, s: x.summary, key: x.sport, sel: { kind: 'sport', value: x.sport } })))), drill('sport', all));
+      add(h('h2', { id: 'periods' }, 'By sport'), h('div', { class: 'card' }, summaryTable('Sport', 'sport', bySport(all).map((x) => ({ label: x.sport, s: x.summary, key: x.sport, sel: { kind: 'sport', value: x.sport } })))), drill('sport', all));
     }
     const yearRows = byPeriod(acts, 'year', state.tz);
-    add(h('h2', { id: 'periods' }, 'By year'), h('div', { class: 'card' }, summaryTable('Year', 'year', yearRows.map((r) => ({ label: r.key, s: r.summary, key: r.key, sel: { kind: 'year', value: r.key } })))), drill('year', acts));
+    add(h('h2', { id: state.sport === 'all' ? undefined : 'periods' }, 'By year'), h('div', { class: 'card' }, summaryTable('Year', 'year', yearRows.map((r) => ({ label: r.key, s: r.summary, key: r.key, sel: { kind: 'year', value: r.key } })))), drill('year', acts));
     const months = monthRows(byPeriod(acts, 'month', state.tz), acts);
     add(h('div', { class: 'h2row' }, h('h2', {}, 'By month'), yearTabs(acts, 'Year shown in the month table')),
       monthBars(acts, months), h('div', { class: state.monthYear === 'all' ? 'card scroll' : 'card' }, summaryTable('Month', 'month', months.map((r) => ({ label: r.label, s: r.summary, key: r.key, sel: { kind: 'month', value: r.key }, title: monthTitle(r.key) })))), drill('month', acts));
@@ -384,7 +433,9 @@ function renderNow(): void {
     add(h('details', { open: state.pick?.table === 'week' }, h('summary', {}, 'By week'),
       h('div', { class: 'row' }, weekSpanControl(acts, 'Weeks shown in the week table')),
       h('div', { class: 'card scroll' }, summaryTable('Week', 'week', byPeriod(acts, 'week', state.tz).filter((r) => spanKeys.has(r.key)).map((r): SummaryRow => ({ label: `${r.key.slice(5)} · ${weekRange(weekStartOf(r.start))}`, s: r.summary, key: r.key, sel: { kind: 'week', value: r.key }, title: `Week ${weekRange(weekStartOf(r.start))}` })).reverse())), drill('week', acts)));
+    main.append(trainingSection(all, acts));
     main.append(zonesSection(all, acts, hz, pz));
+    main.append(curveSection(acts));
     main.append(loopsSection());
     main.append(activitiesSection(acts, hz));
     main.append(exportSection(acts, hz, pz));
@@ -642,8 +693,9 @@ function progressSection(acts: Activity[]): HTMLElement {
     h('p', { class: 'muted small' }, note),
     barChart({ bars, label: `${m.name} per week. Select a bar to list its activities`, fmtY: m.fmt, labelEvery: Math.max(1, Math.ceil(weeks.length / 9)) }));
   return h('div', {},
-    h('div', { class: 'h2row' }, h('h2', { id: 'progress' }, 'Progress'), metricTabs('Measure shown in the progress charts')),
+    h('h2', { id: 'progress' }, 'Progress'),
     goalCard(acts),
+    h('div', { class: 'row measure-row' }, h('span', { class: 'muted small' }, 'Charts show'), metricTabs('Measure shown in the progress charts')),
     h('div', { class: 'charts' }, ytd, weekly), drill('weeks', acts));
 }
 
@@ -663,7 +715,8 @@ function goalCard(acts: Activity[]): HTMLElement {
   } }, h('b', {}, 'Goal'), periodSel, metricSel, targetIn, h('span', { class: 'muted small' }, g ? VOL[g.metric].unit() : ''), h('button', { type: 'submit' }, g ? 'Update' : 'Set'),
     g ? h('button', { type: 'button', class: 'link', onclick: () => { state.goal = null; render(); } }, 'Clear') : null);
   const card = h('div', { class: 'card goal' }, form);
-  if (!g) { card.append(h('p', { class: 'muted small' }, 'Set a target for this week, month or year (as of your last activity). It is kept until you close the tab.')); return card; }
+  form.append(rememberToggle());
+  if (!g) { card.append(h('p', { class: 'muted small' }, `Set a target for this week, month or year (as of your last activity). ${state.remember ? 'It is saved in this browser.' : 'It is kept until you close the tab, unless you tick Remember on this device.'}`)); return card; }
   const m = VOL[g.metric];
   const lp = parts(Math.max(...acts.map((a) => a.startMs)), state.tz);
   const today = dayNumber(lp);
@@ -733,7 +786,11 @@ function thresholdForm(all: Activity[]): HTMLElement {
   const form = h('form', { class: 'card thresholds', 'aria-label': 'Your thresholds', onsubmit: (e) => {
     e.preventDefault();
     const v = Number(hrIn.value);
-    if (v >= 100 && v <= 230) state.hr = { mode: modeSel.value as HrZoneConfig['mode'], value: v };
+    if (v >= 100 && v <= 230) {
+      const next = { mode: modeSel.value as HrZoneConfig['mode'], value: v };
+      if (state.hrByUser || next.mode !== state.hr?.mode || next.value !== state.hr?.value) state.hrByUser = true;
+      state.hr = next;
+    }
     const f = Number(ftpIn.value);
     state.ftp = f >= 50 && f <= 600 ? f : null;
     const r = Number(restIn.value);
@@ -753,7 +810,8 @@ function thresholdForm(all: Activity[]): HTMLElement {
       h('label', {}, 'FTP', ftpIn, 'W'),
       h('label', {}, 'Threshold pace', paceIn, `/${distanceUnit(state.units)}`),
       h('label', {}, 'Weight', kgIn, 'kg'),
-      h('button', { type: 'submit', class: 'primary' }, 'Apply')), msg);
+      h('button', { type: 'submit', class: 'primary' }, 'Apply')),
+    h('div', { class: 'row' }, rememberToggle(), h('span', { class: 'muted small' }, state.remember ? 'Saved in this browser; turn off to delete.' : 'Kept until you close the tab.')), msg);
   const out = h('div', {}, form);
   const notes: (Node | string)[] = [];
   if (state.hr && observedMaxHr(all) === state.hr.value && state.hr.mode === 'maxHr') notes.push(`Max HR defaults to the highest value in your data (${state.hr.value} bpm). Set your own, or your threshold HR, for more accurate zones and load. `);
@@ -897,7 +955,6 @@ function trainingSection(all: Activity[], acts: Activity[]): HTMLElement {
   sec.append(h('p', { class: 'small' }, `Training stress counted for ${src.join(', ')}${load.without ? `; ${plural(load.without, 'activity', 'activities')} without usable data add nothing` : ''}. 100 TSS is about one hour flat out at threshold.${t.lthr && state.hr?.mode === 'maxHr' ? ` Threshold HR is estimated as 90 % of max HR (${t.lthr} bpm).` : ''}${!state.restHr && load.fromHr ? ' Resting HR is taken as 60 bpm until you set yours.' : ''}`));
 
   sec.append(efficiencySection(acts));
-  sec.append(calendarSection(acts, t));
   sec.append(h('details', {}, h('summary', {}, 'How to read this, and how it is worked out'),
     h('dl', { class: 'explain card' },
       h('dt', {}, 'Training stress (TSS)'), h('dd', {}, 'How hard one activity was, combining duration and intensity: hours × intensity factor² × 100, so an hour at threshold is 100 and an easy hour 40–60. With power and an FTP the intensity factor is normalized power ÷ FTP (TrainingPeaks TSS). Runs without power use normalized graded pace ÷ threshold pace (rTSS): every second’s speed is adjusted for the gradient with Minetti’s energy cost of running, then averaged like normalized power. Otherwise it comes from heart rate (hrTSS): TrainingPeaks does not publish its heart-rate table, so this uses the TRIMP-based score of intervals.icu and Golden Cheetah, which weights each second exponentially by heart-rate reserve (needs resting and max HR) and gives 100 for an hour at threshold heart rate.'),
@@ -948,7 +1005,7 @@ function calendarSection(acts: Activity[], t: Thresholds): HTMLElement {
   for (const a of acts) { const d = dayNumber(parts(a.startMs, state.tz)); if (d >= first - 7 && d < next + 7) (byDay.get(d) ?? byDay.set(d, []).get(d)!).push(a); }
   const u = state.units;
   const go = (k: number) => { state.calMonth = months[k]!; render(); document.getElementById('calendar')?.scrollIntoView({ block: 'nearest' }); };
-  const head = h('div', { class: 'chart-head' }, h('h3', { id: 'calendar' }, 'Training calendar'),
+  const head = h('div', { class: 'h2row' }, h('h2', { id: 'calendar' }, 'Calendar'),
     h('div', { class: 'span-pick', role: 'group', 'aria-label': 'Month shown' },
       h('button', { 'aria-label': 'Previous month with activities', disabled: i <= 0, onclick: () => go(i - 1) }, '‹'),
       h('select', { 'aria-label': 'Month shown', onchange: (e) => { state.calMonth = (e.target as HTMLSelectElement).value; render(); } }, ...[...months].reverse().map((k) => h('option', { value: k, selected: k === cur }, monthTitle(k)))),

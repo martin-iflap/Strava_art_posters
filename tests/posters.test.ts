@@ -30,6 +30,7 @@ describe('posters', () => {
         expect(p.svg.startsWith('<svg ')).toBe(true);
         expect(p.svg.endsWith('</svg>')).toBe(true);
         expect(p.svg).not.toMatch(/NaN|undefined|Infinity/);
+        expect(p.svg).not.toMatch(/<(?![a-zA-Z/!?])|&(?![a-z]+;|#\d+;|#x[\da-f]+;)/i); // text is escaped
         expect(count(p.svg, /<(?!\/)[a-zA-Z]/g)).toBe(count(p.svg, /<\/[a-zA-Z]+>|\/>/g)); // balanced tags
       }
     }
@@ -271,5 +272,15 @@ describe('art posters', () => {
     expect(count(renderPoster('spiral', a, opts({ strip: false })).svg, /<line /g)).toBe(days);
     const sports = new Set(a.map((x) => x.sport)).size;
     expect(count(renderPoster('stream', a, opts({ strip: false })).svg, /fill-opacity="0.88"/g)).toBe(Math.min(6, sports));
+  });
+  it('strata draws a layer per activity with heart rate, one year label per year', async () => {
+    const a = await load();
+    const withHr = a.filter((x) => x.series?.hr && x.series.hr.length > 2);
+    const svg = renderPoster('strata', a, opts({ strip: false })).svg;
+    const years = new Set(withHr.map((x) => new Date(x.startMs).getUTCFullYear())).size;
+    expect(count(svg, /<line /g)).toBe(years);
+    expect(count(svg, /class="stratum"/g)).toBeGreaterThanOrEqual(3);
+    expect(count(svg, /M[\d.]+ [\d.]+h/g)).toBeGreaterThanOrEqual(Math.min(400, withHr.length));
+    expect(renderPoster('strata', a.map((x) => ({ ...x, series: null })), opts({ strip: false })).svg).toMatch(/No heart-rate data/);
   });
 });

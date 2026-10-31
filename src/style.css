@@ -439,3 +439,22 @@ span.best { font-weight: 700; }
 .cal-tss { color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .cal-day.has .cal-date { color: var(--text); }
+
+/* import screen: where to get an export */
+.sources { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 760px) { .sources { grid-template-columns: 1fr; } }
+details.source { margin: 0; padding: 0; }
+details.source > summary { list-style: none; display: flex; flex-direction: column; gap: 2px; padding: 14px 40px 14px 18px; color: var(--text); position: relative; border-radius: var(--radius); }
+details.source > summary::-webkit-details-marker { display: none; }
+details.source > summary::after { content: '+'; position: absolute; right: 18px; top: 12px; font-size: 20px; color: var(--muted); }
+details.source[open] > summary::after { content: '−'; }
+details.source > summary b { font-size: 17px; }
+details.source > :not(summary) { margin: 0 18px 14px; }
+details.source .steps li { margin: 6px 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: var(--fill); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+
+/* remember on this device */
+.remember { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.remember input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.measure-row { align-items: center; gap: 10px; margin: 4px 0 12px; }
+.laps-card td:last-child { width: 16%; min-width: 90px; }

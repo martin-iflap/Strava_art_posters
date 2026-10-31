@@ -108,6 +108,22 @@ describe('TCX', () => {
     expect(t.cad[0]).toBe(90);
     expect(t.dist).toEqual([0, 40.5]);
     expect(t.lat[1]).toBeNaN();
+    expect(t.laps).toBeUndefined();
+  });
+  it('reads lap starts and totals, and works out each lap from the samples', () => {
+    const pt = (s: number, d: number, hr: number) => `<Trackpoint><Time>${new Date(Date.UTC(2023, 0, 5, 7) + s * 1000).toISOString()}</Time><DistanceMeters>${d}</DistanceMeters><HeartRateBpm><Value>${hr}</Value></HeartRateBpm></Trackpoint>`;
+    const xml = `<TrainingCenterDatabase><Activities><Activity Sport="Running">
+<Lap StartTime="2023-01-05T07:00:00Z"><TotalTimeSeconds>300</TotalTimeSeconds><DistanceMeters>1000</DistanceMeters><TriggerMethod>Distance</TriggerMethod><Track>${Array.from({ length: 60 }, (_, i) => pt(i * 5, (i * 1000) / 60, 140)).join('')}</Track></Lap>
+<Lap StartTime="2023-01-05T07:05:00Z"><TotalTimeSeconds>240</TotalTimeSeconds><DistanceMeters>1000</DistanceMeters><Track>${Array.from({ length: 49 }, (_, i) => pt(300 + i * 5, 1000 + (i * 1000) / 48, 160)).join('')}</Track></Lap>
+</Activity></Activities></TrainingCenterDatabase>`;
+    const t = parseTcx(xml);
+    expect(t.laps).toHaveLength(2);
+    expect(t.laps![0]).toMatchObject({ timerS: 300, distanceM: 1000, trigger: 'distance' });
+    const s = summarizeTrack(t);
+    expect(s.laps).toHaveLength(2);
+    expect(s.laps![1]).toMatchObject({ startS: 300, startM: 1000, timeS: 240, distanceM: 1000, avgHr: 160, maxHr: 160 });
+    expect(s.laps![0]!.avgHr).toBe(140);
+    expect(s.laps![1]!.movingS).toBeGreaterThan(230);
   });
 });
 

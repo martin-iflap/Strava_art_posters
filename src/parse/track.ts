@@ -1,4 +1,4 @@
-import { PROFILE_POINTS, ROUTE_POINTS, SERIES_POINTS, type Activity, type Route } from '../types';
+import { PROFILE_POINTS, ROUTE_POINTS, SERIES_POINTS, type Activity, type Lap, type Route } from '../types';
 import { haversine, resample, resampleSeries } from '../util/geo';
 
 /** One parsed activity file: parallel arrays, NaN where a sample has no value. */
@@ -15,7 +15,12 @@ export interface ParsedTrack {
   cad: number[];
   /** cumulative distance in metres if the file provides it */
   dist: number[];
+  /** Laps as the file records them: start instant plus whatever totals the file carries. */
+  laps?: FileLap[];
 }
+
+/** A lap boundary read from a file; the lap's figures are worked out from the streams. */
+export interface FileLap { startMs: number; elapsedS?: number; timerS?: number; distanceM?: number; trigger?: string }
 
 export function emptyTrack(): ParsedTrack {
   return { t: [], lat: [], lon: [], ele: [], hr: [], power: [], cad: [], dist: [] };
@@ -47,6 +52,7 @@ export interface TrackSummary {
   speedHist: [number, number][] | null;
   bestEfforts: [number, number][] | null;
   decoupling: number | null;
+  laps: Lap[] | null;
 }
 
 /**
@@ -267,6 +273,53 @@ function histogram(values: number[], dur: number[], lo: number, hi: number): { h
   return { hist, avg: sum / w, max };
 }
 
+/**
+ * Each lap's figures from the samples between its start and the next lap's start. Timer time and distance
+ * come from the file when it has them (that is what the device showed); the rest is measured, so laps
+ * agree with the charts. Fewer than two usable laps gives null: one lap is just the whole activity.
+ */
+function lapsOf(tr: ParsedTrack, laps: FileLap[], c: { cum: number[]; movCum: number[]; dur: number[]; c0: number; startMs: number; pw1: number[] | null }): Lap[] | null {
+  const ls = laps.filter((l) => finite(l.startMs)).sort((a, b) => a.startMs - b.startMs);
+  const n = tr.t.length;
+  const endMs = tr.t.reduce((m, t) => (finite(t) && t > m ? t : m), -Infinity);
+  const firstAt = (ms: number) => { for (let i = 0; i < n; i++) if (finite(tr.t[i]!) && tr.t[i]! >= ms) return i; return n; };
+  const cumAt = (i: number) => { for (let k = Math.min(i, n - 1); k >= 0; k--) if (finite(c.cum[k]!)) return c.cum[k]!; return c.c0; };
+  const out: Lap[] = [];
+  for (let k = 0; k < ls.length; k++) {
+    const l = ls[k]!;
+    const stop = k + 1 < ls.length ? ls[k + 1]!.startMs : endMs + 1;
+    const i0 = firstAt(l.startMs), i1 = Math.max(i0, firstAt(stop) - 1);
+    if (i0 >= n || stop <= l.startMs) continue;
+    let hrSum = 0, hrW = 0, hrMax = 0, pwSum = 0, pwW = 0, cdSum = 0, cdW = 0;
+    for (let i = i0; i <= i1; i++) {
+      const d = c.dur[i]!;
+      const hr = tr.hr[i]!, pw = tr.power[i]!, cd = tr.cad[i]!;
+      if (finite(hr) && hr >= 30 && hr <= 250) { hrSum += hr * d; hrW += d; if (hr > hrMax) hrMax = hr; }
+      if (finite(pw) && pw >= 0 && pw <= 3000) { pwSum += pw * d; pwW += d; }
+      if (finite(cd) && cd > 0 && cd <= 300) { cdSum += cd * d; cdW += d; }
+    }
+    const startM = cumAt(i0) - c.c0;
+    const measured = Math.max(0, (i1 + 1 < n ? cumAt(i1 + 1) : cumAt(i1)) - c.c0 - startM);
+    const startS = (tr.t[i0]! - c.startMs) / 1000;
+    const seg = c.pw1 ? perSecond(tr.t.slice(i0, i1 + 2), tr.power.slice(i0, i1 + 2).map((v) => (v >= 0 && v <= 3000 ? v : NaN)), 0) : null;
+    const moving = (i1 + 1 < n ? c.movCum[i1 + 1]! : c.movCum[i1]!) - c.movCum[i0]!;
+    const span = (Math.min(stop, endMs) - tr.t[i0]!) / 1000;
+    out.push({
+      startS: Math.round(startS), startM: Math.round(startM),
+      timeS: Math.round(l.timerS ?? l.elapsedS ?? span),
+      movingS: Math.round(moving),
+      distanceM: Math.round(l.distanceM ?? measured),
+      elevGainM: Math.round(elevationGain(tr.ele.slice(i0, i1 + 2))),
+      avgHr: hrW ? Math.round(hrSum / hrW) : null, maxHr: hrW ? hrMax : null,
+      avgPower: pwW ? Math.round(pwSum / pwW) : null,
+      np: seg && seg.length >= 30 ? normalizedPower(seg) : null,
+      avgCadence: cdW ? Math.round(cdSum / cdW) : null,
+      ...(l.trigger ? { trigger: l.trigger } : {}),
+    });
+  }
+  return out.filter((x) => x.timeS > 0).length > 1 ? out.filter((x) => x.timeS > 0) : null;
+}
+
 export function summarizeTrack(tr: ParsedTrack): TrackSummary {
   const n = tr.t.length;
   const dur = sampleDurations(tr.t);
@@ -296,6 +349,7 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
   let movingS = 0;
   let maxSpeed = 0;
   const spd = new Array<number>(n).fill(NaN);
+  const movCum = new Array<number>(n).fill(0);
   const kmCum: number[] = [];
   let splits: TrackSummary['splits'] = null;
   if (cd.length > 1 && times.length > 1) {
@@ -321,7 +375,9 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
         }
       }
       last = i;
+      movCum[i] = movingS;
     }
+    for (let i = 1; i < n; i++) if (movCum[i]! < movCum[i - 1]!) movCum[i] = movCum[i - 1]!;
     splits = { cum: kmCum.map((c) => Math.round(c * 10) / 10), endM: Math.round(cd[cd.length - 1]! - c0), endS: Math.round(movingS * 10) / 10 };
   } else movingS = dur.reduce((a, b) => a + b, 0);
 
@@ -371,6 +427,7 @@ export function summarizeTrack(tr: ParsedTrack): TrackSummary {
     speedHist: spH && spH.max > 0 ? spH.hist : null,
     bestEfforts: times.length > 1 && cd.length > 1 ? bestEfforts(cum, tr.t, EFFORT_DISTANCES) : null,
     decoupling: outStream && hr1 ? decoupling(outStream, hr1) : null,
+    laps: tr.laps && tr.laps.length > 1 && startMs !== null ? lapsOf(tr, tr.laps, { cum, movCum, dur, c0: cd[0] ?? 0, startMs, pw1 }) : null,
     startMs,
     elapsedS,
     movingS,
